@@ -1,0 +1,32 @@
+# Environment — NUNCA commit
+.env
+.env.local
+.env.*.local
+
+# State files
+.monitor_state
+.fechamento_state
+.aproval_processed
+.monitor_state.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Hermes
+~/.hermes/
