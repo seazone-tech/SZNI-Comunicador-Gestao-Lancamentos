@@ -2,8 +2,8 @@
 """
 fechamento_diario.py
 Relatório de fechamento do dia — 17h30.
-Lê threads do briefing de HOJE, busca replies, classifica e envia DM pra Bianca.
-Todas as tarefas do dia são mostradas — com ou sem reply.
+Lê TODAS as threads abertas do bot, busca replies, classifica e envia DM pra Bianca.
+Ignora threads com ✅ de bot/Bianca (tarefa concluída no canal).
 Se a data de fim passou e não foi concluída → sugestão Status → Atrasada.
 """
 
@@ -30,19 +30,37 @@ BIANCA_USER_ID = os.environ["BIANCA_USER_ID"]
 client = WebClient(token=SLACK_BOT_TOKEN)
 TZ = dt.timezone(dt.timedelta(hours=-3))
 
-BOT_MSG_MARKERS = [
-    "GESTAO LANCAMENTOS", "GESTÃO LANÇAMENTOS", "MARKETING",
-    "DIRETORIA", "PROJETOS LANCAMENTOS", "FAROL", "MARISTA",
-    "ORCAMENTOS LANCAMENTOS", "ORÇAMENTOS LANÇAMENTOS",
-    "FORNECEDORES LANCAMENTO", "FORNECEDORES LANÇAMENTO",
-    "COMPRA DE TERRENOS", "ANALISE DE TERRENOS", "ANÁLISE DE TERRENOS",
-    "SERVIÇOS/CS/FRANQUIAS", "SERVICOS/CS/FRANQUIAS", "MARCO",
-]
+BOT_USER_ID = None
+
+# ── Detecção de thread concluída ────────────────────────────────────────────
+
+def get_bot_user_id():
+    global BOT_USER_ID
+    if BOT_USER_ID:
+        return BOT_USER_ID
+    BOT_USER_ID = client.auth_test()["user_id"]
+    return BOT_USER_ID
+
+
+def is_thread_done(msg_ts: str) -> bool:
+    """True se a thread tem ✅ reactions de bot ou Bianca."""
+    try:
+        result = client.reactions_get(channel=SLACK_CHANNEL_ID, timestamp=msg_ts)
+        for reaction in result.get("message", {}).get("reactions", []):
+            if reaction.get("name") in ("white_check_mark", "check", "heavy_check_mark"):
+                users = reaction.get("users", [])
+                bot_id = get_bot_user_id()
+                if bot_id in users or BIANCA_USER_ID in users:
+                    return True
+        return False
+    except SlackApiError:
+        return False
+
+
+# ── Extrair tarefas do formato do briefing ─────────────────────────────────
 
 TASK_BLOCK_RE = re.compile(
-    r":large_(?:large_)?(red_circle|yellow_circle|blue_circle):\s+\*(.+?)\*"
-    r".*?Status:\s+(.+?)\s*\|.*?"
-    r"In[ií]cio:\s*(\d{2}/\d{2})\s*→\s*Fim:\s*(\d{2}/\d{2})\s*\(([^)]+)\)",
+    r"📌\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\n|$)",
     re.DOTALL,
 )
 
@@ -64,31 +82,18 @@ BLOQUEIO_RE = re.compile(
     re.IGNORECASE,
 )
 
-BOT_USER_ID = None
-
-
-def get_bot_user_id():
-    global BOT_USER_ID
-    if BOT_USER_ID:
-        return BOT_USER_ID
-    BOT_USER_ID = client.auth_test()["user_id"]
-    return BOT_USER_ID
-
 
 def is_bot_briefing_thread(text):
-    return any(m.upper() in text.upper() for m in BOT_MSG_MARKERS)
+    return "📌" in text
 
 
 def extract_tasks(text):
     tasks = []
     for m in TASK_BLOCK_RE.finditer(text):
         tasks.append({
-            "name": m.group(2).strip(),
-            "status": m.group(3).strip(),
-            "start": m.group(4).strip(),
-            "end": m.group(5).strip(),
-            "urgency": m.group(1).strip(),
-            "urgency_label": m.group(6).strip(),
+            "sheet": m.group(1).strip(),
+            "team":  m.group(2).strip(),
+            "name":  m.group(3).strip(),
         })
     return tasks
 
@@ -130,29 +135,29 @@ def get_replies(thread_ts):
         return []
 
 
-def find_briefing_threads_today():
+def find_briefing_threads():
+    """Busca TODAS as threads abertas (sem ✅ de conclusão)."""
     my_id = get_bot_user_id()
-    today = dt.date.today()
     threads = []
     try:
-        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=50)
+        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
         for msg in result.get("messages", []):
             if msg.get("user") != my_id:
                 continue
             text = msg.get("text", "")
             if not is_bot_briefing_thread(text):
                 continue
-            msg_date = dt.datetime.fromtimestamp(float(msg["ts"]), tz=TZ).date()
-            if msg_date != today:
+            msg_ts = msg["ts"]
+            if is_thread_done(msg_ts):
                 continue
-            # Extrai sheet name da mensagem (primeira linha em caps)
+            # Extrai sheet name da mensagem
             sheet_name = ""
             for line in text.split("\n"):
                 stripped = line.strip().replace("*", "")
                 if stripped.isupper() and len(stripped) > 3:
                     sheet_name = stripped
                     break
-            threads.append({"ts": msg["ts"], "text": msg["text"], "sheet": sheet_name})
+            threads.append({"ts": msg_ts, "text": msg["text"], "sheet": sheet_name})
         return threads
     except SlackApiError as e:
         log.error(f"Erro ao buscar threads: {e}")
@@ -185,12 +190,16 @@ def build_report(threads):
             reply = replies[-1] if replies else None
             classification = classify_reply(reply["text"]) if reply else None
 
-            # Data de fim
-            end_date = parse_end_date(task["end"])
+            # Extrai data de fim do reply de cobrança (se houver)
+            end_date = None
+            if reply:
+                date_match = re.search(r"Fim:\s*(\d{2}/\d{2})", reply["text"])
+                if date_match:
+                    end_date = parse_end_date(date_match.group(1))
             overdue = end_date < today if end_date else False
 
             lines.append(f"\n{counter}️⃣ *{task['name']}*")
-            lines.append(f"   Status atual: {task['status']} | Fim: {task['end']} ({task['urgency_label']})")
+            lines.append(f"   Sheet: {task['sheet']} | Time: {task['team']}")
 
             if reply:
                 lines.append(f"   Reply: \"{reply['text'][:100]}\"")
@@ -204,9 +213,8 @@ def build_report(threads):
 
             elif classification == "iniciou":
                 suggestions.append("Status → Em Andamento")
-                suggestions.append(f"Início Realizada → {today_str}")
 
-            elif overdue and task["status"] not in ("Concluída", "Cancelada"):
+            elif overdue:
                 suggestions.append("Status → Atrasada")
 
             if suggestions:
@@ -220,7 +228,7 @@ def build_report(threads):
             all_tasks.append({
                 "counter": counter,
                 "task_name": task["name"],
-                "task_status": task["status"],
+                "sheet": task["sheet"],
                 "classification": classification,
                 "suggestions": suggestions,
                 "reply": reply,
@@ -234,7 +242,7 @@ def build_report(threads):
     lines.append(f"\n{'─' * 40}")
     lines.append("🤖 Aprova linha por linha: \"aprova <número>\"")
     lines.append("🤖 Ignora: \"ignora <número>\"")
-    lines.append(f"\nTotal: {len(all_tasks)} tarefa(s) do dia")
+    lines.append(f"\nTotal: {len(all_tasks)} tarefa(s) aberta(s)")
 
     return "\n".join(lines), all_tasks
 
@@ -253,18 +261,18 @@ def save_tasks_state(all_tasks):
         for t in all_tasks:
             reply_text = t["reply"]["text"][:200] if t["reply"] else ""
             suggestions_str = "||".join(t["suggestions"])
-            f.write(f"{t['counter']}|{t['task_name']}|{t['task_status']}|{t['classification']}|{suggestions_str}|{reply_text}|{t['thread_ts']}\n")
+            f.write(f"{t['counter']}|{t['task_name']}|{t['sheet']}|{t['classification']}|{suggestions_str}|{reply_text}|{t['thread_ts']}\n")
 
 
 def run():
     log.info("Iniciando relatório de fechamento do dia")
-    threads = find_briefing_threads_today()
-    log.info(f"Threads do briefing hoje: {len(threads)}")
+    threads = find_briefing_threads()
+    log.info(f"Threads abertas encontradas: {len(threads)}")
 
     result = build_report(threads)
     if result is None:
         log.info("Nenhuma tarefa — enviando relatório vazio")
-        send_dm("📊 RELATÓRIO DE FECHAMENTO — Nenhuma tarefa no briefing de hoje. Sem ações necessárias.")
+        send_dm("📊 RELATÓRIO DE FECHAMENTO — Nenhuma tarefa em aberto. Sem ações necessárias.")
         return
 
     report_text, all_tasks = result

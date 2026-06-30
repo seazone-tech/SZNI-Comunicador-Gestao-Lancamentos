@@ -10,6 +10,7 @@ Assistente de gestão de lançamentos da Bianca. Roda no Slack e integra com Sma
 | **Cobrar Updates** | Seg-Sex 08:15 | Cobra replies nos threads do briefing |
 | **Monitor** | Seg-Sex a cada 30min | Monitora replies, avisa Bianca por DM se encontrar bloqueios/atrasos |
 | **Fechamento** | Seg-Sex 17:30 | Relatório do dia via DM — todas as tarefas com updates e sugestões de mudança no SmartSheet |
+| **Aprovar** | Sob demanda | Após o fechamento, Bianca manda "aprova 1" etc. Aplica mudanças no SmartSheet |
 
 ## Requisitos
 
@@ -47,7 +48,6 @@ hermes gateway run
 | `SLACK_BOT_TOKEN` | Token do bot Slack |
 | `SLACK_CHANNEL_ID` | ID do canal onde o bot posta os briefings |
 | `BIANCA_USER_ID` | ID do Slack do usuário (pra DM) |
-| `LOOKAHEAD_DAYS` | Dias de antecedência no briefing (padrão: 3) |
 
 ### Colunas do SmartSheet esperadas
 
@@ -58,6 +58,21 @@ hermes gateway run
 - `Data de Fim Planejada`
 - `Data de Início Realizada`
 - `Data de Fim Realizada`
+- `Dependência` (opcional — se preenchida, a tarefa dependente precisa estar em STATUS_DONE_VALUES)
+
+### Regras de filtragem
+
+1. Status NÃO está em STATUS_DONE_VALUES
+2. "Data de Início Planejada" NÃO está em branco
+3. "Data de Início Planejada" <= hoje
+4. Se "Dependência" tem valor → a tarefa referenciada PRECISA estar em STATUS_DONE_VALUES
+
+### Organização do canal
+
+- **Uma tarefa = uma thread.** Não se repete no canal.
+- Estado persistente: `~/.hermes/scripts/.briefing_posted`
+- **Thread com ✅ de bot ou Bianca** → ignorada por todas as skills
+- **Thread com ✅ de outra pessoa** → continua ativa
 
 ## Como conversar com o bot
 

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 monitor_updates.py
-Monitoriza todas as threads do canal do dia.
-Se encontrar replies relevantes, avisa Bianca por DM com link directo.
+Monitora TODAS as threads do bot no canal.
+Se encontrar replies relevantes, avisa Bianca por DM.
+Ignora threads com ✅ de bot/Bianca (tarefa concluída no canal).
+Não filtra por data — monitora todo o histórico.
 """
 import os, re, logging, datetime
 from dotenv import load_dotenv
@@ -14,7 +16,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
+BOT_TOKEN  = os.environ["SLACK_BOT_TOKEN"]
 CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
 BIANCA_USER_ID = os.environ["BIANCA_USER_ID"]
 STATE_FILE = os.path.expanduser("~/.hermes/scripts/.monitor_state")
@@ -50,8 +52,16 @@ IGNORE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Cache para nome do canal
+BOT_USER_ID_CACHE = None
 _channel_name = None
+
+
+def get_bot_user_id():
+    global BOT_USER_ID_CACHE
+    if BOT_USER_ID_CACHE:
+        return BOT_USER_ID_CACHE
+    BOT_USER_ID_CACHE = client.auth_test()["user_id"]
+    return BOT_USER_ID_CACHE
 
 
 def get_channel_name():
@@ -67,7 +77,6 @@ def get_channel_name():
 
 
 def get_permalink(msg_ts):
-    """Obtem link directo para a mensagem no canal."""
     try:
         result = client.chat_getPermalink(channel=CHANNEL_ID, message_ts=msg_ts)
         return result.data["permalink"]
@@ -75,15 +84,23 @@ def get_permalink(msg_ts):
         return None
 
 
-def get_bot_user_id():
+def is_thread_done(msg_ts: str) -> bool:
+    """True se a thread tem ✅ reactions de bot ou Bianca."""
     try:
-        return client.auth_test()["user_id"]
-    except Exception:
-        return None
+        result = client.reactions_get(channel=CHANNEL_ID, timestamp=msg_ts)
+        for reaction in result.get("message", {}).get("reactions", []):
+            if reaction.get("name") in ("white_check_mark", "check", "heavy_check_mark"):
+                users = reaction.get("users", [])
+                bot_id = get_bot_user_id()
+                if bot_id in users or BIANCA_USER_ID in users:
+                    return True
+        return False
+    except SlackApiError:
+        return False
 
 
 def is_bot_briefing_thread(text):
-    return any(m.upper() in text.upper() for m in BOT_MSG_MARKERS)
+    return "📌" in text
 
 
 def load_processed():
@@ -100,21 +117,24 @@ def save_processed(processed):
             f.write(item + "\n")
 
 
-def find_bot_threads_today():
+def find_bot_threads():
+    """Busca TODAS as threads do bot, ignorando as com ✅ de conclusão."""
     my_id = get_bot_user_id()
-    today = datetime.date.today()
     threads = []
-    result = client.conversations_history(channel=CHANNEL_ID, limit=50)
-    for msg in result.data.get("messages", []):
-        if msg.get("user") != my_id:
-            continue
-        text = msg.get("text", "")
-        if not is_bot_briefing_thread(text):
-            continue
-        msg_date = datetime.datetime.fromtimestamp(float(msg["ts"]), tz=TZ).date()
-        if msg_date != today:
-            continue
-        threads.append(msg["ts"])
+    try:
+        result = client.conversations_history(channel=CHANNEL_ID, limit=200)
+        for msg in result.data.get("messages", []):
+            if msg.get("user") != my_id:
+                continue
+            text = msg.get("text", "")
+            if not is_bot_briefing_thread(text):
+                continue
+            msg_ts = msg["ts"]
+            if is_thread_done(msg_ts):
+                continue
+            threads.append(msg_ts)
+    except SlackApiError as e:
+        log.error(f"Erro ao buscar histórico: {e}")
     return threads
 
 
@@ -167,8 +187,8 @@ def send_dm_to_bianca(alerts):
 def run():
     log.info("Monitor de updates iniciado")
     processed = load_processed()
-    threads = find_bot_threads_today()
-    log.info("Threads hoje: " + str(len(threads)))
+    threads = find_bot_threads()
+    log.info("Threads abertas encontradas: " + str(len(threads)))
 
     new_alerts = []
 
