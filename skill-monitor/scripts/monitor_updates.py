@@ -37,6 +37,8 @@ BOT_MSG_MARKERS = [
     "MARCO",
 ]
 
+BRIEFING_STATE = os.path.expanduser("~/.hermes/scripts/.briefing_posted")
+
 DELAY_PATTERNS = re.compile(
     r"(atras[a-z]+|nao vai|não vai|nao consigo|não consigo|nao deve|não deve|"
     r"bloquead[a-z]+|depende de|gargalo|"
@@ -120,24 +122,50 @@ def save_processed(processed):
             f.write(item + "\n")
 
 
-def find_bot_threads():
-    """Busca TODAS as threads do bot, ignorando as com ✅ de conclusão."""
-    my_id = get_bot_user_id()
+def load_briefing_threads():
+    """
+    Fonte primária: thread_ts do .briefing_posted.
+    Fallback: conversations_history para threads não presentes no estado.
+    """
     threads = []
+    known_ts = set()
+
+    # Fonte primária: estado do briefing
+    try:
+        with open(BRIEFING_STATE) as f:
+            for line in f:
+                parts = line.strip().split("|")
+                if len(parts) >= 3:
+                    threads.append(parts[2])
+                    known_ts.add(parts[2])
+    except FileNotFoundError:
+        pass
+
+    # Fallback: varre histórico apenas para threads não rastreadas no estado
     try:
         result = client.conversations_history(channel=CHANNEL_ID, limit=200)
         for msg in result.data.get("messages", []):
-            if msg.get("user") != my_id:
+            if msg.get("user") != get_bot_user_id():
                 continue
-            text = msg.get("text", "")
-            if not is_bot_briefing_thread(text):
+            if not is_bot_briefing_thread(msg.get("text", "")):
                 continue
             msg_ts = msg["ts"]
-            if is_thread_done(msg_ts):
+            if msg_ts in known_ts:
                 continue
             threads.append(msg_ts)
+            known_ts.add(msg_ts)
     except SlackApiError as e:
         log.error(f"Erro ao buscar histórico: {e}")
+
+    return threads
+
+
+def find_bot_threads():
+    """Retorna threads abertas (sem ✅), usando estado como fonte primária."""
+    threads = []
+    for ts in load_briefing_threads():
+        if not is_thread_done(ts):
+            threads.append(ts)
     return threads
 
 

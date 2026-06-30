@@ -129,6 +129,26 @@ def has_human_replied(channel, thread_ts):
         return False
 
 
+def bot_already_followed(channel, thread_ts):
+    """
+    True se o bot já enviou uma mensagem de follow-up nesta thread.
+    Exclui a mensagem raiz (primeira mensagem do briefing).
+    """
+    try:
+        result = client.conversations_replies(channel=channel, ts=thread_ts)
+        bot_id = get_bot_user_id()
+        first = True
+        for msg in result.get("messages", []):
+            if first:
+                first = False  # pula a mensagem raiz
+                continue
+            if msg.get("user") == bot_id:
+                return True
+        return False
+    except SlackApiError:
+        return False
+
+
 # ── Buscar threads abertas ──────────────────────────────────────────────────
 
 def find_open_threads():
@@ -181,7 +201,10 @@ def run():
                 log.error(f"Erro ao cobrar thread {thread_ts}: {e.response['error']}")
             continue
 
-        # Já teve reply: follow-up curto
+        # Já teve reply: follow-up curto (só se o bot ainda não seguiu)
+        if bot_already_followed(SLACK_CHANNEL_ID, thread_ts):
+            log.info(f"Thread {thread_ts}: bot já seguiu — pulando")
+            continue
         try:
             client.chat_postMessage(
                 channel=SLACK_CHANNEL_ID,

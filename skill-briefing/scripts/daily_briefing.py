@@ -223,17 +223,11 @@ def main():
     posted_tasks = load_posted_tasks()
     log.info(f"Tarefas já postadas no estado: {len(posted_tasks)}")
 
-    # Carrega threads existentes no canal com ✅ de bot/Bianca
+    # Verifica ✅ nos threads já conhecidos (via estado — sem varrer histórico)
     existing_done_threads = set()
-    try:
-        result = slack_client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
-        for msg in result.get("messages", []):
-            if msg.get("user") != bot_id:
-                continue
-            if is_thread_done(slack_client, SLACK_CHANNEL_ID, msg["ts"]):
-                existing_done_threads.add(msg["ts"])
-    except SlackApiError as e:
-        log.error(f"Erro ao buscar histórico do canal: {e}")
+    for task_key, thread_ts in posted_tasks.items():
+        if is_thread_done(slack_client, SLACK_CHANNEL_ID, thread_ts):
+            existing_done_threads.add(thread_ts)
 
     folder_children = ss_client.Folders.get_folder_children(FOLDER_ID)
     sheets = [item for item in folder_children.data]
