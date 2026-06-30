@@ -34,6 +34,7 @@ client = WebClient(token=SLACK_BOT_TOKEN)
 TZ = dt.timezone(dt.timedelta(hours=-3))
 
 BOT_USER_ID = None
+BRIEFING_STATE = os.path.expanduser("~/.hermes/scripts/.briefing_posted")
 
 # ── Detecção de thread concluída ────────────────────────────────────────────
 
@@ -131,24 +132,60 @@ def get_replies(thread_ts):
     try:
         result = client.conversations_replies(channel=SLACK_CHANNEL_ID, ts=thread_ts)
         replies = []
+        end_date_from_reply = None
         for msg in result.get("messages", []):
             if msg.get("user") == my_id:
+                # Primeira reply do bot: extrai end_date
+                if end_date_from_reply is None:
+                    match = END_DATE_RE.search(msg.get("text", ""))
+                    if match:
+                        end_date_from_reply = match.group(1)
                 continue
             text = msg.get("text", "").strip()
             if not text or len(text) < 3:
                 continue
             replies.append({"text": text, "ts": msg["ts"]})
-        return replies
+        return replies, end_date_from_reply
     except SlackApiError:
-        return []
+        return [], None
 
 
 def find_briefing_threads():
-    """Busca TODAS as threads abertas (sem ✅ de conclusão)."""
+    """Busca TODAS as threads abertas (sem ✅ de conclusão).
+
+    Fonte primária: .briefing_posted.
+    Fallback: conversations_history + paginação para threads não no estado.
+    """
     my_id = get_bot_user_id()
     threads = []
+    known_ts = set()
+
+    # Fonte primária: estado do briefing
     try:
-        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        with open(BRIEFING_STATE) as f:
+            for line in f:
+                parts = line.strip().split("|")
+                if len(parts) >= 3:
+                    ts = parts[2]
+                    known_ts.add(ts)
+                    if is_thread_done(ts):
+                        continue
+                    threads.append({"ts": ts, "text": "", "sheet": ""})
+    except FileNotFoundError:
+        pass
+
+    # Fallback: histórico com paginação para threads não rastreadas
+    cursor = None
+    while True:
+        try:
+            if cursor:
+                result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200, cursor=cursor)
+            else:
+                result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        except SlackApiError as e:
+            log.error(f"Erro ao buscar histórico: {e}")
+            break
+
         for msg in result.get("messages", []):
             if msg.get("user") != my_id:
                 continue
@@ -156,6 +193,9 @@ def find_briefing_threads():
             if not is_bot_briefing_thread(text):
                 continue
             msg_ts = msg["ts"]
+            if msg_ts in known_ts:
+                continue
+            known_ts.add(msg_ts)
             if is_thread_done(msg_ts):
                 continue
             # Extrai sheet name da mensagem
@@ -166,10 +206,12 @@ def find_briefing_threads():
                     sheet_name = stripped
                     break
             threads.append({"ts": msg_ts, "text": msg["text"], "sheet": sheet_name})
-        return threads
-    except SlackApiError as e:
-        log.error(f"Erro ao buscar threads: {e}")
-        return []
+
+        cursor = result.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+    return threads
 
 
 def build_report(threads):
@@ -181,8 +223,23 @@ def build_report(threads):
     all_tasks = []
 
     for thread in threads:
-        tasks = extract_tasks(thread["text"])
-        replies = get_replies(thread["ts"])
+        replies, end_date_from_reply = get_replies(thread["ts"])
+
+        # Extrai tasks da thread — tenta texto raiz, senão busca replies
+        if thread["text"]:
+            tasks = extract_tasks(thread["text"])
+        else:
+            # Thread vinda só do estado: buscar texto raiz via API
+            tasks = []
+            try:
+                result = client.conversations_replies(channel=SLACK_CHANNEL_ID, ts=thread["ts"])
+                for msg in result.get("messages", []):
+                    if msg.get("user") == get_bot_user_id():
+                        tasks = extract_tasks(msg.get("text", ""))
+                        if tasks:
+                            break
+            except SlackApiError:
+                pass
 
         if not tasks:
             continue
@@ -198,9 +255,11 @@ def build_report(threads):
             reply = replies[-1] if replies else None
             classification = classify_reply(reply["text"]) if reply else None
 
-            # Data de fim vem da mensagem raiz do briefing (thread["text"])
+            # Data de fim: da primeira reply do bot (formato novo), senão da raiz
             end_date = None
-            if task.get("end_date_str"):
+            if end_date_from_reply:
+                end_date = parse_end_date(end_date_from_reply)
+            elif task.get("end_date_str"):
                 end_date = parse_end_date(task["end_date_str"])
             overdue = end_date < today if end_date else False
 

@@ -154,27 +154,68 @@ def bot_already_followed(channel, thread_ts):
 
 # ── Buscar threads abertas ──────────────────────────────────────────────────
 
+BRIEFING_STATE = os.path.expanduser("~/.hermes/scripts/.briefing_posted")
+
+
 def find_open_threads():
-    """Retorna threads abertas (sem ✅ de conclusão)."""
+    """Retorna threads abertas (sem ✅ de conclusão).
+
+    Fonte primária: .briefing_posted.
+    Fallback: conversations_history + paginação para threads não rastreadas.
+    """
     bot_id = get_bot_user_id()
     threads = []
+    known_ts = set()
+
+    # Fonte primária: estado do briefing
     try:
-        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        with open(BRIEFING_STATE) as f:
+            for line in f:
+                parts = line.strip().split("|")
+                if len(parts) >= 3:
+                    ts = parts[2]
+                    known_ts.add(ts)
+                    if is_thread_done(ts):
+                        log.info(f"Thread {ts} com ✅ — ignorando")
+                        continue
+                    threads.append({"ts": ts, "root_ts": ts, "tasks": []})
+    except FileNotFoundError:
+        pass
+
+    # Fallback: histórico com paginação para threads não rastreadas
+    cursor = None
+    while True:
+        try:
+            if cursor:
+                result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200, cursor=cursor)
+            else:
+                result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        except SlackApiError as e:
+            log.error(f"Erro ao buscar histórico: {e}")
+            break
+
         for msg in result.get("messages", []):
             if msg.get("user") != bot_id:
                 continue
             if "📌" not in msg.get("text", ""):
                 continue
-            if is_thread_done(msg["ts"]):
-                log.info(f"Thread {msg['ts']} com ✅ — ignorando")
+            msg_ts = msg["ts"]
+            if msg_ts in known_ts:
+                continue
+            known_ts.add(msg_ts)
+            if is_thread_done(msg_ts):
+                log.info(f"Thread {msg_ts} com ✅ — ignorando")
                 continue
             tasks = extract_tasks(msg["text"])
             if not tasks:
                 continue
-            thread_ts = msg.get("thread_ts") or msg["ts"]
-            threads.append({"ts": thread_ts, "root_ts": msg["ts"], "tasks": tasks})
-    except SlackApiError as e:
-        log.error(f"Erro ao buscar histórico: {e}")
+            thread_ts = msg.get("thread_ts") or msg_ts
+            threads.append({"ts": thread_ts, "root_ts": msg_ts, "tasks": tasks})
+
+        cursor = result.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
     return threads
 
 
@@ -189,6 +230,21 @@ def run():
     for thread in threads:
         thread_ts = thread["ts"]
         tasks = thread["tasks"]
+
+        # Tasks vazias (vindas só do estado): buscar da thread
+        if not tasks:
+            try:
+                result = client.conversations_replies(channel=SLACK_CHANNEL_ID, ts=thread_ts)
+                for msg in result.get("messages", []):
+                    if msg.get("user") == get_bot_user_id():
+                        tasks = extract_tasks(msg.get("text", ""))
+                        if tasks:
+                            break
+            except SlackApiError:
+                pass
+            if not tasks:
+                log.info(f"Thread {thread_ts}: sem tasks — pulando")
+                continue
 
         # Ninguém respondeu ainda: mensagem completa (primeira vez)
         if not has_human_replied(SLACK_CHANNEL_ID, thread_ts):

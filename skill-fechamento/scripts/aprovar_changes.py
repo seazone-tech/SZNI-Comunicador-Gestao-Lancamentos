@@ -163,53 +163,37 @@ def get_sheet_by_name(folder_id, name_hint):
 
 # ── Aplicar mudança no SmartSheet ───────────────────────────────────────────
 
-def apply_smartsheet_change(task_name, suggestions, sheet):
+def apply_smartsheet_change(task_name, suggestions, sheet, row, col_map):
     """
-    Aplica mudanças no SmartSheet para a tarefa.
+    Aplica mudanças no SmartSheet para a tarefa já localizada.
     Retorna (sucesso: bool, updates: list, status_final: str|None)
     status_final é o status da célula se foi alterado pra done, senão None.
     """
-    col_map = {col.title: col.id for col in sheet.columns}
-
-    status_col     = col_map.get("Status")
+    status_col      = col_map.get("Status")
     inicio_real_col = col_map.get("Data de Início Realizada")
-    fim_real_col   = col_map.get("Data de Fim Realizada")
+    fim_real_col    = col_map.get("Data de Fim Realizada")
 
     today_str = dt.date.today().strftime("%Y-%m-%d")
 
-    for row in sheet.rows:
-        task_cell = None
-        for cell in row.cells:
-            if col_map.get("Atividade") == cell.column_id:
-                task_cell = cell
-                break
+    updates = []
+    row_update = {"id": row.id, "cells": []}
+    status_final = None
 
-        if not task_cell:
-            continue
-
-        cell_value = task_cell.display_value or task_cell.value or ""
-        if task_name.strip().lower() not in str(cell_value).strip().lower():
-            continue
-
-        updates = []
-        row_update = {"id": row.id, "cells": []}
-        status_final = None
-
-        for sug in suggestions:
-            sug_lower = sug.lower()
-            if "concluída" in sug_lower:
-                if status_col:
-                    row_update["cells"].append({"columnId": status_col, "value": "Concluída"})
-                    updates.append("Status → Concluída")
-                    status_final = "Concluída"
-                if fim_real_col:
-                    row_update["cells"].append({"columnId": fim_real_col, "value": today_str})
-                    updates.append(f"Fim Realizada → {today_str}")
-            elif "em andamento" in sug_lower:
-                if status_col:
-                    current_status = None
-                    for cell in row.cells:
-                        if cell.column_id == status_col:
+    for sug in suggestions:
+        sug_lower = sug.lower()
+        if "concluída" in sug_lower:
+            if status_col:
+                row_update["cells"].append({"columnId": status_col, "value": "Concluída"})
+                updates.append("Status → Concluída")
+                status_final = "Concluída"
+            if fim_real_col:
+                row_update["cells"].append({"columnId": fim_real_col, "value": today_str})
+                updates.append(f"Fim Realizada → {today_str}")
+        elif "em andamento" in sug_lower:
+            if status_col:
+                current_status = None
+                for cell in row.cells:
+                    if cell.column_id == status_col:
                             current_status = cell.display_value or cell.value
                             break
                     if current_status not in ("Concluída",):
@@ -334,27 +318,32 @@ def run():
             task = tasks[num]
             sheet_hint = task["sheet"]
 
-            # Localiza o sheet
+            # Localiza o sheet e row
+            found_row = None
+            found_col_map = None
             if sheet_hint:
                 sheet = get_sheet_by_name(SMARTSHEET_FOLDER_ID, sheet_hint)
-            else:
-                sheet = None
-
-            if not sheet:
+                if sheet:
+                    result = find_task_row(sheet, task["name"])
+                    if result:
+                        found_row, found_col_map = result
+            if not found_row:
+                # Fallback: procurar task em todos os sheets usando find_task_row (sem aplicar)
                 try:
                     children = ss_client.Folders.get_folder_children(SMARTSHEET_FOLDER_ID)
                     for item in children.data:
                         s = ss_client.Sheets.get_sheet(item.id)
-                        ok, _, _ = apply_smartsheet_change(task["name"], task["suggestions"], s)
-                        if ok:
+                        result = find_task_row(s, task["name"])
+                        if result:
                             sheet = s
+                            found_row, found_col_map = result
                             break
                 except Exception as e:
                     log.error(f"Erro ao buscar sheet: {e}")
 
-            # Aplica a mudança
-            if sheet:
-                ok, updates, status_final = apply_smartsheet_change(task["name"], task["suggestions"], sheet)
+            # Aplica a mudança uma única vez
+            if found_row:
+                ok, updates, status_final = apply_smartsheet_change(task["name"], task["suggestions"], sheet, found_row, found_col_map)
                 if ok:
                     approvals.append((task["name"], updates))
                     # Auto-check se status virou done
