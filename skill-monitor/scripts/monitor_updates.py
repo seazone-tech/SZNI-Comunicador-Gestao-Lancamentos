@@ -11,7 +11,10 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env"))
+# Tenta Hermes path primeiro (runtime), depois fallback para projeto
+_hermes_env = os.path.expanduser("~/.hermes/scripts/.env")
+_project_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env")
+load_dotenv(_hermes_env) if os.path.exists(_hermes_env) else load_dotenv(_project_env)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
