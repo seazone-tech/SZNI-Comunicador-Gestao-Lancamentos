@@ -55,8 +55,7 @@ def is_thread_done(msg_ts: str) -> bool:
         for reaction in result.get("message", {}).get("reactions", []):
             if reaction.get("name") in ("white_check_mark", "check", "heavy_check_mark"):
                 users = reaction.get("users", [])
-                bot_id = get_bot_user_id()
-                if bot_id in users or os.environ.get("BIANCA_USER_ID") in users:
+                if get_bot_user_id() in users or os.environ.get("BIANCA_USER_ID") in users:
                     return True
         return False
     except SlackApiError:
@@ -129,9 +128,13 @@ def has_human_replied(channel, thread_ts):
         return False
 
 
+FOLLOWUP_MARKER = "passando para pegar um feedback"
+
+
 def bot_already_followed(channel, thread_ts):
     """
     True se o bot já enviou uma mensagem de follow-up nesta thread.
+    Detecta pelo marcador de texto único da mensagem de follow-up.
     Exclui a mensagem raiz (primeira mensagem do briefing).
     """
     try:
@@ -140,9 +143,9 @@ def bot_already_followed(channel, thread_ts):
         first = True
         for msg in result.get("messages", []):
             if first:
-                first = False  # pula a mensagem raiz
+                first = False
                 continue
-            if msg.get("user") == bot_id:
+            if msg.get("user") == bot_id and FOLLOWUP_MARKER in msg.get("text", ""):
                 return True
         return False
     except SlackApiError:
