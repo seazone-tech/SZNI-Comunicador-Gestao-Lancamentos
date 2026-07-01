@@ -191,13 +191,14 @@ def build_report(threads):
             reply = replies[-1] if replies else None
             classification = classify_reply(reply["text"]) if reply else None
 
-            # Extrai data de fim do reply de cobrança (se houver)
+            # Extrai data de fim do body do briefing (postado pelo bot)
             end_date = None
-            if reply:
-                date_match = re.search(r"Fim:\s*(\d{2}/\d{2})", reply["text"])
+            bot_body = thread.get("bot_body", "")
+            if bot_body:
+                date_match = re.search(r"Fim:\s*(\d{2}/\d{2})", bot_body)
                 if date_match:
                     end_date = parse_end_date(date_match.group(1))
-            overdue = end_date < today if end_date else False
+            overdue = end_date is not None and end_date < today
 
             lines.append(f"\n{counter}️⃣ *{task['name']}*")
             lines.append(f"   Sheet: {task['sheet']} | Time: {task['team']}")
