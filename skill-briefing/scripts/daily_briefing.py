@@ -16,10 +16,7 @@ import smartsheet
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-# Tenta Hermes path primeiro (runtime), depois fallback para projeto
-_hermes_env = os.path.expanduser("~/.hermes/scripts/.env")
-_project_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env")
-load_dotenv(_hermes_env) if os.path.exists(_hermes_env) else load_dotenv(_project_env)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -223,11 +220,17 @@ def main():
     posted_tasks = load_posted_tasks()
     log.info(f"Tarefas já postadas no estado: {len(posted_tasks)}")
 
-    # Verifica ✅ nos threads já conhecidos (via estado — sem varrer histórico)
+    # Carrega threads existentes no canal com ✅ de bot/Bianca
     existing_done_threads = set()
-    for task_key, thread_ts in posted_tasks.items():
-        if is_thread_done(slack_client, SLACK_CHANNEL_ID, thread_ts):
-            existing_done_threads.add(thread_ts)
+    try:
+        result = slack_client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        for msg in result.get("messages", []):
+            if msg.get("user") != bot_id:
+                continue
+            if is_thread_done(slack_client, SLACK_CHANNEL_ID, msg["ts"]):
+                existing_done_threads.add(msg["ts"])
+    except SlackApiError as e:
+        log.error(f"Erro ao buscar histórico do canal: {e}")
 
     folder_children = ss_client.Folders.get_folder_children(FOLDER_ID)
     sheets = [item for item in folder_children.data]
@@ -368,3 +371,6 @@ def main():
             updated_posted = cleaned
             log.info(f"Removidas {removed} tarefa(s) done do estado (total: {len(updated_posted)})")
 
+
+if __name__ == '__main__':
+    main()

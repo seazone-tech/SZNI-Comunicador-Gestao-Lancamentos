@@ -16,10 +16,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import smartsheet
 
-# Tenta Hermes path primeiro (runtime), depois fallback para projeto
-_hermes_env = os.path.expanduser("~/.hermes/scripts/.env")
-_project_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env")
-load_dotenv(_hermes_env) if os.path.exists(_hermes_env) else load_dotenv(_project_env)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,59 +87,22 @@ def save_processed(processed):
 
 # ── Buscar threads no canal ─────────────────────────────────────────────────
 
-BRIEFING_STATE = os.path.expanduser("~/.hermes/scripts/.briefing_posted")
-
-
-def _load_threads_from_state():
-    threads = {}
-    try:
-        with open(BRIEFING_STATE) as f:
-            for line in f:
-                parts = line.strip().split("|")
-                if len(parts) >= 3:
-                    key = "|".join(parts[:2])
-                    task_name = key.split("|")[-1]
-                    threads[task_name.lower()] = parts[2]
-    except FileNotFoundError:
-        pass
-    return threads
-
-
 def get_all_briefing_threads():
     """Retorna {task_name_lower: ts} de todas as threads do bot no canal."""
-    threads = {}
-    known_ts = set()
-
-    # Fonte primária: estado do briefing
-    state = _load_threads_from_state()
-    threads.update(state)
-    known_ts.update(state.values())
-
-    # Fallback: histórico com paginação
     my_id = get_bot_user_id()
-    cursor = None
+    threads = {}
     try:
-        while True:
-            kwargs = {"channel": SLACK_CHANNEL_ID, "limit": 200}
-            if cursor:
-                kwargs["cursor"] = cursor
-            result = client.conversations_history(**kwargs)
-            for msg in result.get("messages", []):
-                if msg.get("user") != my_id:
-                    continue
-                text = msg.get("text", "")
-                if "📌" not in text:
-                    continue
-                msg_ts = msg["ts"]
-                if msg_ts in known_ts:
-                    continue
-                for m in re.finditer(r"📌\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(.+?)(?:\n|$)", text):
-                    task_name = m.group(3).strip()
-                    threads[task_name.lower()] = msg_ts
-                    known_ts.add(msg_ts)
-            cursor = result.get("response_metadata", {}).get("next_cursor")
-            if not cursor:
-                break
+        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        for msg in result.get("messages", []):
+            if msg.get("user") != my_id:
+                continue
+            text = msg.get("text", "")
+            if "📌" not in text:
+                continue
+            # Extrai todas as tarefas da mensagem
+            for m in re.finditer(r"📌\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(.+?)(?:\n|$)", text):
+                task_name = m.group(3).strip()
+                threads[task_name.lower()] = msg["ts"]
     except SlackApiError as e:
         log.error(f"Erro ao buscar histórico: {e}")
     return threads
@@ -261,9 +221,7 @@ def add_check_to_thread(task_name, threads_map):
 
 # ── Confirmação ───────────────────────────────────────────────────────────
 
-def send_confirm(approvals, rejected, checked, dm_channel_id):
-    if dm_channel_id is None:
-        return
+def send_confirm(approvals, rejected, checked):
     lines = ["✅ Confirmação das aprovações:\n"]
     for task_name, updates in approvals:
         checked_mark = " ✅" if task_name in checked else ""
@@ -273,7 +231,7 @@ def send_confirm(approvals, rejected, checked, dm_channel_id):
         for task_name, reason in rejected:
             lines.append(f"  ❌ {task_name}: {reason}")
     try:
-        client.chat_postMessage(channel=dm_channel_id, text="\n".join(lines))
+        client.chat_postMessage(channel=BIANCA_USER_ID, text="\n".join(lines))
     except SlackApiError as e:
         log.error(f"Erro ao enviar confirmação: {e}")
 
@@ -369,7 +327,7 @@ def run():
     save_processed(processed)
 
     if approvals or rejected:
-        send_confirm(approvals, rejected, checked, dm_channel_id)
+        send_confirm(approvals, rejected, checked)
         log.info(f"Aprovações: {len(approvals)} | Rejeitadas: {len(rejected)} | Checkadas: {len(checked)}")
     else:
         log.info("Nenhuma aprovação detectada")

@@ -15,10 +15,7 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-# Tenta Hermes path primeiro (runtime), depois fallback para projeto
-_hermes_env = os.path.expanduser("~/.hermes/scripts/.env")
-_project_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env")
-load_dotenv(_hermes_env) if os.path.exists(_hermes_env) else load_dotenv(_project_env)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,11 +60,9 @@ def is_thread_done(msg_ts: str) -> bool:
 # ── Extrair tarefas do formato do briefing ─────────────────────────────────
 
 TASK_BLOCK_RE = re.compile(
-    r"📌\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\n|$)",
+    r"(?:📌|:pushpin:)\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\n|$)",
     re.DOTALL,
 )
-
-END_DATE_RE = re.compile(r"In[ií]cio:\s*\S+\s*→\s*Fim:\s*(\d{2}/\d{2})")
 
 INICIOU_RE = re.compile(
     r"(come[cç]ou|come[cç]amos|inici[ou]|j[aá] come[cç]|come[cç]ando|"
@@ -89,19 +84,16 @@ BLOQUEIO_RE = re.compile(
 
 
 def is_bot_briefing_thread(text):
-    return "📌" in text
+    return "📌" in text or ":pushpin:" in text
 
 
 def extract_tasks(text):
     tasks = []
-    end_date_match = END_DATE_RE.search(text)
-    end_date_str = end_date_match.group(1) if end_date_match else None
     for m in TASK_BLOCK_RE.finditer(text):
         tasks.append({
             "sheet": m.group(1).strip(),
             "team":  m.group(2).strip(),
             "name":  m.group(3).strip(),
-            "end_date_str": end_date_str,
         })
     return tasks
 
@@ -198,10 +190,12 @@ def build_report(threads):
             reply = replies[-1] if replies else None
             classification = classify_reply(reply["text"]) if reply else None
 
-            # Data de fim vem da mensagem raiz do briefing (thread["text"])
+            # Extrai data de fim do reply de cobrança (se houver)
             end_date = None
-            if task.get("end_date_str"):
-                end_date = parse_end_date(task["end_date_str"])
+            if reply:
+                date_match = re.search(r"Fim:\s*(\d{2}/\d{2})", reply["text"])
+                if date_match:
+                    end_date = parse_end_date(date_match.group(1))
             overdue = end_date < today if end_date else False
 
             lines.append(f"\n{counter}️⃣ *{task['name']}*")

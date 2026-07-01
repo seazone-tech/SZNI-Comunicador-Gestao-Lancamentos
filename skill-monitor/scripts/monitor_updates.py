@@ -11,10 +11,7 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-# Tenta Hermes path primeiro (runtime), depois fallback para projeto
-_hermes_env = os.path.expanduser("~/.hermes/scripts/.env")
-_project_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env")
-load_dotenv(_hermes_env) if os.path.exists(_hermes_env) else load_dotenv(_project_env)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -36,8 +33,6 @@ BOT_MSG_MARKERS = [
     "SERVIÇOS/CS/FRANQUIAS", "SERVICOS/CS/FRANQUIAS",
     "MARCO",
 ]
-
-BRIEFING_STATE = os.path.expanduser("~/.hermes/scripts/.briefing_posted")
 
 DELAY_PATTERNS = re.compile(
     r"(atras[a-z]+|nao vai|não vai|nao consigo|não consigo|nao deve|não deve|"
@@ -105,7 +100,7 @@ def is_thread_done(msg_ts: str) -> bool:
 
 
 def is_bot_briefing_thread(text):
-    return "📌" in text
+    return "📌" in text or ":pushpin:" in text
 
 
 def load_processed():
@@ -122,50 +117,24 @@ def save_processed(processed):
             f.write(item + "\n")
 
 
-def load_briefing_threads():
-    """
-    Fonte primária: thread_ts do .briefing_posted.
-    Fallback: conversations_history para threads não presentes no estado.
-    """
+def find_bot_threads():
+    """Busca TODAS as threads do bot, ignorando as com ✅ de conclusão."""
+    my_id = get_bot_user_id()
     threads = []
-    known_ts = set()
-
-    # Fonte primária: estado do briefing
-    try:
-        with open(BRIEFING_STATE) as f:
-            for line in f:
-                parts = line.strip().split("|")
-                if len(parts) >= 3:
-                    threads.append(parts[2])
-                    known_ts.add(parts[2])
-    except FileNotFoundError:
-        pass
-
-    # Fallback: varre histórico apenas para threads não rastreadas no estado
     try:
         result = client.conversations_history(channel=CHANNEL_ID, limit=200)
         for msg in result.data.get("messages", []):
-            if msg.get("user") != get_bot_user_id():
+            if msg.get("user") != my_id:
                 continue
-            if not is_bot_briefing_thread(msg.get("text", "")):
+            text = msg.get("text", "")
+            if not is_bot_briefing_thread(text):
                 continue
             msg_ts = msg["ts"]
-            if msg_ts in known_ts:
+            if is_thread_done(msg_ts):
                 continue
             threads.append(msg_ts)
-            known_ts.add(msg_ts)
     except SlackApiError as e:
         log.error(f"Erro ao buscar histórico: {e}")
-
-    return threads
-
-
-def find_bot_threads():
-    """Retorna threads abertas (sem ✅), usando estado como fonte primária."""
-    threads = []
-    for ts in load_briefing_threads():
-        if not is_thread_done(ts):
-            threads.append(ts)
     return threads
 
 

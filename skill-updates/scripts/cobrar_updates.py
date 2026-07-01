@@ -19,10 +19,7 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-# Tenta Hermes path primeiro (runtime), depois fallback para projeto
-_hermes_env = os.path.expanduser("~/.hermes/scripts/.env")
-_project_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env")
-load_dotenv(_hermes_env) if os.path.exists(_hermes_env) else load_dotenv(_project_env)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +52,8 @@ def is_thread_done(msg_ts: str) -> bool:
         for reaction in result.get("message", {}).get("reactions", []):
             if reaction.get("name") in ("white_check_mark", "check", "heavy_check_mark"):
                 users = reaction.get("users", [])
-                if get_bot_user_id() in users or os.environ.get("BIANCA_USER_ID") in users:
+                bot_id = get_bot_user_id()
+                if bot_id in users or os.environ.get("BIANCA_USER_ID") in users:
                     return True
         return False
     except SlackApiError:
@@ -64,8 +62,9 @@ def is_thread_done(msg_ts: str) -> bool:
 
 # ── Extrair tarefas do formato do briefing ─────────────────────────────────
 
+# Slack converte 📌 em :pushpin: no payload, então a regex aceita ambos
 TASK_BLOCK_RE = re.compile(
-    r"📌\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\n|$)",
+    r"(?:📌|:pushpin:)\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\n|$)",
     re.DOTALL,
 )
 
@@ -128,30 +127,6 @@ def has_human_replied(channel, thread_ts):
         return False
 
 
-FOLLOWUP_MARKER = "passando para pegar um feedback"
-
-
-def bot_already_followed(channel, thread_ts):
-    """
-    True se o bot já enviou uma mensagem de follow-up nesta thread.
-    Detecta pelo marcador de texto único da mensagem de follow-up.
-    Exclui a mensagem raiz (primeira mensagem do briefing).
-    """
-    try:
-        result = client.conversations_replies(channel=channel, ts=thread_ts)
-        bot_id = get_bot_user_id()
-        first = True
-        for msg in result.get("messages", []):
-            if first:
-                first = False
-                continue
-            if msg.get("user") == bot_id and FOLLOWUP_MARKER in msg.get("text", ""):
-                return True
-        return False
-    except SlackApiError:
-        return False
-
-
 # ── Buscar threads abertas ──────────────────────────────────────────────────
 
 def find_open_threads():
@@ -163,7 +138,8 @@ def find_open_threads():
         for msg in result.get("messages", []):
             if msg.get("user") != bot_id:
                 continue
-            if "📌" not in msg.get("text", ""):
+            # Slack converte 📌 em :pushpin: no payload, então checa ambos
+            if "📌" not in msg.get("text", "") and ":pushpin:" not in msg.get("text", ""):
                 continue
             if is_thread_done(msg["ts"]):
                 log.info(f"Thread {msg['ts']} com ✅ — ignorando")
@@ -204,10 +180,7 @@ def run():
                 log.error(f"Erro ao cobrar thread {thread_ts}: {e.response['error']}")
             continue
 
-        # Já teve reply: follow-up curto (só se o bot ainda não seguiu)
-        if bot_already_followed(SLACK_CHANNEL_ID, thread_ts):
-            log.info(f"Thread {thread_ts}: bot já seguiu — pulando")
-            continue
+        # Já teve reply: follow-up curto
         try:
             client.chat_postMessage(
                 channel=SLACK_CHANNEL_ID,
