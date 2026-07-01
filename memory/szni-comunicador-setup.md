@@ -10,97 +10,81 @@ metadata:
 ## Dono
 Bianca Carina Valente (Bica) — Especialista de gestao de lancamentos
 
-## Plataforma
-- Hermes v0.17.0
-- WSL2 Ubuntu + tmux
-- Gateway: tmux session hermes-gateway
-- Slack: bot conectado ao canal #cronogramas-lancamentos
-
 ## Pasta do projeto
-`C:\Users\compu\.claude\projects\agente Bica\`
+SZNI repo: `C:\Users\compu\.claude\projects\agente Bica\` — so docs e memorias, scripts removidos.
 
-## Estrutura de skills
+## Plataforma
+- **Hermes v0.17.0** (WSL2 Ubuntu + tmux)
+- Gateway: tmux session `hermes-gateway`
+- **Todos os scripts rodam de `~/.hermes/scripts/`**
+- Memory copiada pra `~/.hermes/memory/`
+
+## Scripts — UNICO local
 ```
-agente Bica/
-  skill-briefing/scripts/  → daily_briefing.py
-  skill-updates/scripts/   → cobrar_updates.py
-  skill-monitor/scripts/   → monitor_updates.py
-  .env                     → variáveis de ambiente (tokens)
-  SOUL.md                  → persona do agente
-  setup-env.py             → script para copiar .env
-```
-
-## Tarefas programadas (Hermes cron)
-| ID | Nome | Quando | O que faz |
-|---|---|---|---|
-| 3580392bc37f | daily-briefing-cronogramas | Seg-Sex 08h | Envia resumo do SmartSheet no Slack |
-| 5ef5a4385641 | cobrar-updates-diario | Seg-Sex 08h15 | Cobra updates nas threads do briefing |
-| 40266f26cd94 | monitor-respostas-updates | Seg-Sex a cada 30min | Le respostas, manda DM se encontrar algo |
-
-## Como pedir ao bot para correr manualmente
-| Frase no Slack | Executa |
-|---|---|
-| "roda o briefing" | hermes cron run 3580392bc37f |
-| "cobra os updates" | hermes cron run 5ef5a4385641 |
-| "monitora as tarefas" | hermes cron run 40266f26cd94 |
-
-## Inteligencia implementada (skill-monitor)
-- A cada 30min verifica threads do briefing
-- Detecta: atrasos, bloqueios, "não", links, perguntas
-- Envia DM directa para Bianca (U06093URWPR) com link "Ver resposta"
-- Estado: ~/.hermes/scripts/.monitor_state (evita duplicados)
-- Filtra por data: só processa mensagens do dia actual
-
-## Como o gateway arranca automaticamente
-- Ficheiro batch em: `C:\Users\compu\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\SZNI-Gateway-Start.bat`
-- Executa wsl Ubuntu + tmux session `hermes-gateway` com `start-gateway.sh`
-- Tmux session criada como detached — não abre janela
-- Protegido contra duplicados (verifica se tmux já tem sessão hermes-gateway antes de criar)
-
-## Estado actual (2026-06-29)
-- Gateway Hermes: rodando (PID 9332, tmux hermes-gateway)
-- Briefing: funciona correctamente
-- Cobrar updates: funciona, filtra por data (só dia actual)
-- Monitor de respostas: activo, DM formatada com link directo "Ver resposta"
-- Auto-start: ficheiro Startup criado (reinicia gateway ao ligar PC)
-- Skills: .env copiado para skill-briefing/, skill-updates/, skill-monitor/
-- Tarefas Windows SZNI-Briefing, SZNI-Updates, SZNI-Monitor criadas (Agendador de Tarefas)
-- **scope missing_scope**: canais:read falta no Slack app — não bloqueia DM, mas sem isto não lista canais automaticamente
-
-## Nova skill — Fechamento do dia (criado 2026-06-29)
-| O que | Detalhe |
-|---|---|
-| Script | skill-fechamento/scripts/fechamento_diario.py |
-| Cron Hermes | 30 17 * * 1-5 (seg-sex 17h30) — job ID a73f113395f8 |
-| Cron Windows | SZNI-Fechamento — seg-sex 17h30 |
-| Handler aprovação | skill-fechamento/scripts/aprovar_changes.py |
-| Comando manual | /fechamento |
-| Destino | DM directa pra Bianca (não canal) |
-| Regras | Início se confirmou que começou; Fim se confirmou que terminou; Bloqueio = sem sugestão; Sem resposta = sem sugestão |
-| Prioridade replies | Último wins |
-| Aprovação | Linha por linha — "aprova 1", "aprova 2"... |
-
-## Estrutura de pastas (2026-06-26)
-```
-agente Bica/
-  .env
-  SOUL.md
-  memory/
-    szni-comunicador-setup.md  → setup e estado
-    feedback-comunicacao.md      → preferência de linguagem simples
-  skill-briefing/scripts/
-    daily_briefing.py          → cron 3580392bc37f
-  skill-updates/scripts/
-    cobrar_updates.py           → cron 5ef5a4385641
-  skill-monitor/scripts/
-    monitor_updates.py          → cron 40266f26cd94
-  skill-fechamento/scripts/
-    fechamento_diario.py         → cron a73f113395f8
-    aprobar_changes.py          → detecta "aprova N" e aplica no SmartSheet
+~/.hermes/scripts/ (WSL: /home/compu/.hermes/scripts/)
+  cronograma-briefing.py    <- daily_briefing (briefing 8h)
+  cobrar_updates.py           <- cobrar updates (10h)
+  monitor_updates.py          <- monitor replies (9h-18h)
+  fechamento_diario.py        <- relatorio fechamento (17h30)
+  aprovar_changes.py          <- aprovacao sob demanda
+  .env                        <- tokens e variaveis
+  .briefing_posted          <- estado threads (limpar pra retestar)
 ```
 
-## O que fazer na segunda-feira
-- Bianca quer adicionar novas skills ao agente
-- Ideias mencionou: integrar com outros canais, mais automações de gestão de lançamentos
-- Antes de continuar, rever o que o agente já faz e o que ainda falta
-- Consultar Oráculo (MCP kb) sobre processos de lançamentos que podem ser automatizados
+## REGRA: Scripts versionados no SZNI repo
+
+Os scripts foram removidos do SZNI repo (Commit pendente: 6 arquivos deletados).
+Fluxo atual: editar no Hermes diretamente.
+Se precisar versionar: criar scripts novos no SZNI repo e syncar pro Hermes.
+
+## Cron jobs no Hermes
+| Cron ID | Script | Quando |
+|---|---|---|
+| 3580392bc37f | cronograma-briefing.py | Seg-Sex 08h |
+| 5ef5a4385641 | cobrar_updates.py | Seg-Sex 10h |
+| 40266f26cd94 | monitor_updates.py | Seg-Sex 9h-18h |
+| a73f113395f8 | fechamento_diario.py | Seg-Sex 17h30 |
+
+Todos com workdir=/home/compu/.hermes/scripts.
+
+## Canal Slack atual
+C0BE0QE9E79 (canal oficial do agente)
+Bot adicionado ao canal manualmente.
+
+## Como rodar manualmente
+Usar o agente do Slack ou:
+python3 /home/compu/.hermes/scripts/cronograma-briefing.py
+python3 /home/compu/.hermes/scripts/cobrar_updates.py
+
+## Regras de filtragem do briefing
+1. Status NAO esta em STATUS_DONE_VALUES (Concluida, Concluida, Cancelada, Cancelado)
+2. "Data de Inicio Planejada" NAO esta em branco
+3. "Data de Inicio Planejada" <= hoje
+4. Se "Dependencia" tem valor -> a tarefa referenciada PRECISA estar em STATUS_DONE_VALUES
+
+## Organizacao do canal — arquitetura thread-unique
+- Uma tarefa = uma thread. Postada uma vez, nunca se repete.
+- Atualizacoes ficam na thread existente.
+- Estado: ~/.hermes/scripts/.briefing_posted (key = sheet|task_name -> thread_ts)
+- Tarefa concluida no canal: bot ou Bianca coloca check na thread -> skills ignoram
+- Tarefa concluida no SmartSheet: status muda para DONE_VALUES -> removida do .briefing_posted
+
+## Bugs ja corrigidos
+- Scripts nao tinham if __name__ == "__main__": main() — adicionado
+- Arquivo duplicado aprobar_changes.py (sem 'v') — removido
+- apply_smartsheet_change em aprovar_changes.py tinha loop interno — refatorado
+
+## Pasta antiga apagada
+C:\Users\compu\.claude\projects\smartsheet\ — apagada.
+
+## .env — variaveis em ~/.hermes/scripts/.env
+SMARTSHEET_TOKEN=<seu_token>
+SMARTSHEET_FOLDER_ID=<id_da_pasta>
+SLACK_BOT_TOKEN=<seu_token>
+SLACK_CHANNEL_ID=C0BE0QE9E79
+BIANCA_USER_ID=U06093URWPR
+STATUS_DONE_VALUES=Concluida,Concluida,Cancelada,Cancelado
+
+## IDs de referencia
+- Canal Slack oficial: C0BE0QE9E79
+- Bianca: U06093URWPR

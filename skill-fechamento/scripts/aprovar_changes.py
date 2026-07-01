@@ -2,7 +2,9 @@
 """
 aprovar_changes.py
 Lê DMs do bot, detecta "aprova N", aplica mudanças no SmartSheet.
-Rodado pelo monitor a cada 30min.
+Após aplicar, se o status mudou pra Concluída/Concluida/Cancelada/Cancelado,
+adiciona ✅ na thread correspondente no canal automaticamente.
+Roda sob demanda (quando Bianca mandar).
 """
 
 import os
@@ -14,7 +16,8 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import smartsheet
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.env"))
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.expanduser("~/.hermes/scripts/.env")) or load_dotenv(os.path.join(_script_dir, ".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,30 +25,25 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-BIANCA_USER_ID = os.environ["BIANCA_USER_ID"]
-SMARTSHEET_TOKEN = os.environ["SMARTSHEET_TOKEN"]
-SMARTSHEET_FOLDER_ID = int(os.environ["SMARTSHEET_FOLDER_ID"])
+SLACK_BOT_TOKEN       = os.environ["SLACK_BOT_TOKEN"]
+BIANCA_USER_ID        = os.environ["BIANCA_USER_ID"]
+SMARTSHEET_TOKEN      = os.environ["SMARTSHEET_TOKEN"]
+SMARTSHEET_FOLDER_ID  = int(os.environ["SMARTSHEET_FOLDER_ID"])
+SLACK_CHANNEL_ID      = os.environ["SLACK_CHANNEL_ID"]
 
-client = WebClient(token=SLACK_BOT_TOKEN)
+client    = WebClient(token=SLACK_BOT_TOKEN)
 ss_client = smartsheet.Smartsheet(SMARTSHEET_TOKEN)
 
 TZ = dt.timezone(dt.timedelta(hours=-3))
 
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".fechamento_state")
-PROCESSED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".aproval_processed")
-
-BOT_MSG_MARKERS = [
-    "GESTAO LANCAMENTOS", "GESTÃO LANÇAMENTOS", "MARKETING",
-    "DIRETORIA", "PROJETOS LANCAMENTOS", "FAROL", "MARISTA",
-    "ORCAMENTOS LANCAMENTOS", "ORÇAMENTOS LANÇAMENTOS",
-    "FORNECEDORES LANCAMENTO", "FORNECEDORES LANÇAMENTO",
-    "COMPRA DE TERRENOS", "ANALISE DE TERRENOS", "ANÁLISE DE TERRENOS",
-    "SERVIÇOS/CS/FRANQUIAS", "SERVICOS/CS/FRANQUIAS", "MARCO",
-]
+STATE_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".fechamento_state")
+PROCESSED_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".aproval_processed")
 
 BOT_USER_ID = None
+DONE_VALUES = {"Concluída", "Concluida", "Cancelada", "Cancelado"}
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def get_bot_user_id():
     global BOT_USER_ID
@@ -56,22 +54,21 @@ def get_bot_user_id():
 
 
 def load_fechamento_state():
-    """Carrega tarefas do estado: counter|name|task_status|classification|suggestions|reply_text|thread_ts"""
+    """Carrega tarefas do estado: counter|name|sheet|classification|suggestions|reply_text|thread_ts"""
     tasks = {}
     if not os.path.exists(STATE_FILE):
         return tasks
     with open(STATE_FILE) as f:
         for line in f:
             parts = line.strip().split("|")
-            if len(parts) >= 6:
-                suggestions = parts[4] if len(parts) > 4 else ""
+            if len(parts) >= 5:
                 tasks[int(parts[0])] = {
-                    "name": parts[1],
-                    "task_status": parts[2],
-                    "classification": parts[3],
-                    "suggestions": suggestions.split("||") if suggestions else [],
-                    "reply_text": parts[5] if len(parts) > 5 else "",
-                    "thread_ts": parts[6] if len(parts) > 6 else "",
+                    "name":         parts[1],
+                    "sheet":        parts[2] if len(parts) > 2 else "",
+                    "classification": parts[3] if len(parts) > 3 else "",
+                    "suggestions":  parts[4].split("||") if parts[4] else [],
+                    "reply_text":   parts[5] if len(parts) > 5 else "",
+                    "thread_ts":    parts[6] if len(parts) > 6 else "",
                 }
     return tasks
 
@@ -80,7 +77,7 @@ def load_processed():
     if not os.path.exists(PROCESSED_FILE):
         return set()
     with open(PROCESSED_FILE) as f:
-        return set(line.strip() for line in f if line.strip())
+        return {l.strip() for l in f if l.strip()}
 
 
 def save_processed(processed):
@@ -89,51 +86,32 @@ def save_processed(processed):
             f.write(item + "\n")
 
 
-def get_fechamento_threads_today():
-    """Busca threads do briefing de hoje (pra associar tarefa ao sheet)."""
+# ── Buscar threads no canal ─────────────────────────────────────────────────
+
+def get_all_briefing_threads():
+    """Retorna {task_name_lower: ts} de todas as threads do bot no canal."""
     my_id = get_bot_user_id()
-    today = dt.date.today()
-    threads = []
+    threads = {}
     try:
-        result = client.conversations_history(channel=os.environ["SLACK_CHANNEL_ID"], limit=50)
+        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
         for msg in result.get("messages", []):
             if msg.get("user") != my_id:
                 continue
             text = msg.get("text", "")
-            if not any(m.upper() in text.upper() for m in BOT_MSG_MARKERS):
+            if "📌" not in text:
                 continue
-            msg_date = dt.datetime.fromtimestamp(float(msg["ts"]), tz=TZ).date()
-            if msg_date != today:
-                continue
-            threads.append({"ts": msg["ts"], "text": msg["text"]})
-        return threads
-    except SlackApiError:
-        return []
+            # Extrai todas as tarefas da mensagem
+            for m in re.finditer(r"📌\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(.+?)(?:\n|$)", text):
+                task_name = m.group(3).strip()
+                threads[task_name.lower()] = msg["ts"]
+    except SlackApiError as e:
+        log.error(f"Erro ao buscar histórico: {e}")
+    return threads
 
 
-def find_sheet_for_task(task_name, threads):
-    """Tenta encontrar o sheet onde a tarefa está."""
-    import re
-    TASK_BLOCK_RE = re.compile(
-        r":large_(?:large_)?red_circle:.*?"
-        r"(?:yellow_circle|blue_circle):.*?"
-        r":large_(?:large_)?(?:red_circle|yellow_circle|blue_circle):\s+\*(.+?)\*",
-        re.DOTALL,
-    )
-    for thread in threads:
-        if task_name in thread["text"]:
-            # Extrai o sheet name do texto
-            lines = thread["text"].split("\n")
-            for line in lines:
-                if line.strip().endswith("-"):
-                    continue
-                if "FAROL" in line.upper() or "MARISTA" in line.upper() or "MARCO" in line.upper():
-                    return line.strip().replace("*", "")
-    return None
-
+# ── Localizar sheet ────────────────────────────────────────────────────────
 
 def get_sheet_by_name(folder_id, name_hint):
-    """Encontra sheet pelo nome (ou parte do nome)."""
     try:
         children = ss_client.Folders.get_folder_children(folder_id)
         for item in children.data:
@@ -144,15 +122,21 @@ def get_sheet_by_name(folder_id, name_hint):
     return None
 
 
-def apply_smartsheet_change(task_name, classification, suggestions, sheet):
-    """Aplica mudança no SmartSheet para a tarefa."""
+# ── Aplicar mudança no SmartSheet ───────────────────────────────────────────
+
+def apply_smartsheet_change(task_name, suggestions, sheet):
+    """
+    Aplica mudanças no SmartSheet para a tarefa.
+    Retorna (sucesso: bool, updates: list, status_final: str|None)
+    status_final é o status da célula se foi alterado pra done, senão None.
+    """
     col_map = {col.title: col.id for col in sheet.columns}
 
-    status_col = col_map.get("Status")
+    status_col     = col_map.get("Status")
     inicio_real_col = col_map.get("Data de Início Realizada")
-    fim_real_col = col_map.get("Data de Fim Realizada")
+    fim_real_col   = col_map.get("Data de Fim Realizada")
 
-    today_str = dt.date.today().strftime("%d/%m/%Y")
+    today_str = dt.date.today().strftime("%Y-%m-%d")
 
     for row in sheet.rows:
         task_cell = None
@@ -170,6 +154,7 @@ def apply_smartsheet_change(task_name, classification, suggestions, sheet):
 
         updates = []
         row_update = {"id": row.id, "cells": []}
+        status_final = None
 
         for sug in suggestions:
             sug_lower = sug.lower()
@@ -177,6 +162,7 @@ def apply_smartsheet_change(task_name, classification, suggestions, sheet):
                 if status_col:
                     row_update["cells"].append({"columnId": status_col, "value": "Concluída"})
                     updates.append("Status → Concluída")
+                    status_final = "Concluída"
                 if fim_real_col:
                     row_update["cells"].append({"columnId": fim_real_col, "value": today_str})
                     updates.append(f"Fim Realizada → {today_str}")
@@ -202,18 +188,45 @@ def apply_smartsheet_change(task_name, classification, suggestions, sheet):
             try:
                 ss_client.Sheets.update_rows(sheet.id, [row_update])
                 log.info(f"Aplicado: {task_name} | {', '.join(updates)}")
-                return True, updates
+                return True, updates, status_final
             except Exception as e:
                 log.error(f"Erro ao atualizar {task_name}: {e}")
-                return False, [str(e)]
+                return False, [str(e)], None
 
-    return False, ["Tarefa não encontrada no sheet"]
+    return False, ["Tarefa não encontrada no sheet"], None
 
 
-def send_confirm(approvals, rejected):
+# ── Auto-check no Slack ────────────────────────────────────────────────────
+
+def add_check_to_thread(task_name, threads_map):
+    """
+    Adiciona ✅ na thread correspondente à tarefa.
+    Retorna True se encontrou e marcou, False caso contrário.
+    """
+    ts = threads_map.get(task_name.lower())
+    if not ts:
+        log.warning(f"Thread não encontrada para: {task_name}")
+        return False
+    try:
+        client.reactions_add(
+            channel=SLACK_CHANNEL_ID,
+            timestamp=ts,
+            name="white_check_mark",
+        )
+        log.info(f"✅ adicionado na thread {ts}: {task_name[:40]}")
+        return True
+    except SlackApiError as e:
+        log.error(f"Erro ao adicionar ✅ em {task_name}: {e.response['error']}")
+        return False
+
+
+# ── Confirmação ───────────────────────────────────────────────────────────
+
+def send_confirm(approvals, rejected, checked):
     lines = ["✅ Confirmação das aprovações:\n"]
     for task_name, updates in approvals:
-        lines.append(f"  ✅ {task_name}: {', '.join(updates)}")
+        checked_mark = " ✅" if task_name in checked else ""
+        lines.append(f"  ✅ {task_name}: {', '.join(updates)}{checked_mark}")
     if rejected:
         lines.append("")
         for task_name, reason in rejected:
@@ -224,21 +237,23 @@ def send_confirm(approvals, rejected):
         log.error(f"Erro ao enviar confirmação: {e}")
 
 
+# ── Main ──────────────────────────────────────────────────────────────────
+
 def run():
     log.info("Verificando aprovações de fechamento")
-    my_id = get_bot_user_id()
+
     tasks = load_fechamento_state()
     if not tasks:
         log.info("Nenhuma tarefa pendente de aprovação")
         return
 
-    processed = load_processed()
-    threads = get_fechamento_threads_today()
+    processed    = load_processed()
+    threads_map  = get_all_briefing_threads()
+    approvals    = []
+    rejected     = []
+    checked      = set()  # tarefas que receberam ✅
 
-    approvals = []
-    rejected = []
-
-    # Buscar DMs do bot hoje
+    # Buscar DMs do bot
     try:
         result = client.conversations_history(channel=BIANCA_USER_ID, limit=20)
     except SlackApiError as e:
@@ -249,7 +264,7 @@ def run():
 
     for msg in result.get("messages", []):
         user = msg.get("user")
-        if user == my_id:
+        if user == get_bot_user_id():
             continue
         text = msg.get("text", "").strip()
         if not text:
@@ -276,7 +291,9 @@ def run():
                 continue
 
             task = tasks[num]
-            sheet_hint = find_sheet_for_task(task["name"], threads)
+            sheet_hint = task["sheet"]
+
+            # Localiza o sheet
             if sheet_hint:
                 sheet = get_sheet_by_name(SMARTSHEET_FOLDER_ID, sheet_hint)
             else:
@@ -287,17 +304,22 @@ def run():
                     children = ss_client.Folders.get_folder_children(SMARTSHEET_FOLDER_ID)
                     for item in children.data:
                         s = ss_client.Sheets.get_sheet(item.id)
-                        found = apply_smartsheet_change(task["name"], task["classification"], task["suggestions"], s)
-                        if found[0]:
+                        ok, _, _ = apply_smartsheet_change(task["name"], task["suggestions"], s)
+                        if ok:
                             sheet = s
                             break
                 except Exception as e:
                     log.error(f"Erro ao buscar sheet: {e}")
 
+            # Aplica a mudança
             if sheet:
-                ok, updates = apply_smartsheet_change(task["name"], task["classification"], task["suggestions"], sheet)
+                ok, updates, status_final = apply_smartsheet_change(task["name"], task["suggestions"], sheet)
                 if ok:
                     approvals.append((task["name"], updates))
+                    # Auto-check se status virou done
+                    if status_final in DONE_VALUES:
+                        if add_check_to_thread(task["name"], threads_map):
+                            checked.add(task["name"])
                 else:
                     rejected.append((task["name"], updates[0]))
             else:
@@ -306,8 +328,8 @@ def run():
     save_processed(processed)
 
     if approvals or rejected:
-        send_confirm(approvals, rejected)
-        log.info(f"Aprovações: {len(approvals)} | Rejeitadas: {len(rejected)}")
+        send_confirm(approvals, rejected, checked)
+        log.info(f"Aprovações: {len(approvals)} | Rejeitadas: {len(rejected)} | Checkadas: {len(checked)}")
     else:
         log.info("Nenhuma aprovação detectada")
 
