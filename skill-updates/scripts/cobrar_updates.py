@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_script_dir, ".env")) or load_dotenv(os.path.expanduser("~/.hermes/scripts/.env"))
 
 logging.basicConfig(
     level=logging.INFO,
