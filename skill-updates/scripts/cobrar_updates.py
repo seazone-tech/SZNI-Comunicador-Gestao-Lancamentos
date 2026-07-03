@@ -5,16 +5,18 @@ Cobra update de cada tarefa listada no briefing.
 Ignora threads com ✅ de bot/Bianca (tarefa concluída no canal).
 Busca TODAS as threads abertas, independente de data.
 
-Comportamento por thread:
-- Primeira vez (ninguém respondeu ainda): mensagem completa com 3 perguntas
-- Já teve reply mas bot ainda não seguiu: mensagem curta pedindo feedback
-- Bot já seguiu: pula (evita duplicar cobrança)
+Comportamento por thread (máximo 3 cobranças):
+- 1ª cobrança: mensagem completa com 3 perguntas (primeira vez, ninguém respondeu)
+- 2ª cobrança: follow-up curto (depois de já ter resposta humana)
+- 3ª cobrança: só se for 1 dia antes da data de fim planejada
+- 4ª+ : pula
 """
 
 import os
 import re
 import logging
 import datetime as dt
+from difflib import get_close_matches
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -29,8 +31,19 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 SLACK_BOT_TOKEN  = os.environ["SLACK_BOT_TOKEN"]
-SLACK_CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
+SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "")  # fallback de compatibilidade
 client = WebClient(token=SLACK_BOT_TOKEN)
+
+
+def parse_channel_map() -> dict:
+    """Lê CHANNEL_MAP do env. Formato: 'Nome Sheet:CHANNEL_ID,...'"""
+    raw = os.getenv("CHANNEL_MAP", "")
+    mapping = {}
+    for item in raw.split(","):
+        if ":" in item:
+            sheet, channel = item.strip().split(":", 1)
+            mapping[sheet.strip()] = channel.strip()
+    return mapping
 
 TZ = dt.timezone(dt.timedelta(hours=-3))
 
@@ -46,10 +59,10 @@ def get_bot_user_id():
     return BOT_USER_ID
 
 
-def is_thread_done(msg_ts: str) -> bool:
+def is_thread_done(msg_ts: str, channel_id: str) -> bool:
     """True se a thread tem ✅ reactions de bot ou Bianca."""
     try:
-        result = client.reactions_get(channel=SLACK_CHANNEL_ID, timestamp=msg_ts)
+        result = client.reactions_get(channel=channel_id, timestamp=msg_ts)
         for reaction in result.get("message", {}).get("reactions", []):
             if reaction.get("name") in ("white_check_mark", "check", "heavy_check_mark"):
                 users = reaction.get("users", [])
@@ -64,8 +77,10 @@ def is_thread_done(msg_ts: str) -> bool:
 # ── Extrair tarefas do formato do briefing ─────────────────────────────────
 
 # Slack converte 📌 em :pushpin: no payload, então a regex aceita ambos
+# Formato: 📌 [sheet] [team] nome da tarefa [DD/MM]
+# O campo de data é opcional (para retrocompatibilidade com mensagens antigas)
 TASK_BLOCK_RE = re.compile(
-    r"(?:📌|:pushpin:)\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\n|$)",
+    r"(?:📌|:pushpin:)\s*\[(.+?)\]\s*\[(.+?)\]\s*(.+?)(?:\s*\[(\d{2}/\d{2})\])?(?:\n|$)",
     re.DOTALL,
 )
 
@@ -77,8 +92,52 @@ def extract_tasks(text):
             "sheet": m.group(1).strip(),
             "team":  m.group(2).strip(),
             "name":  m.group(3).strip(),
+            "end_date_str": m.group(4).strip() if m.group(4) else None,
         })
     return tasks
+
+
+def parse_end_date(end_date_str: str | None, year_offset: int = 0) -> dt.date | None:
+    """
+    Converte 'DD/MM' em date (ano atual ou atual+1 se a data já passou no ano).
+    Retorna None se não conseguir converter.
+    """
+    if not end_date_str:
+        return None
+    try:
+        day, month = end_date_str.strip().split("/")
+        today = dt.date.today()
+        year = today.year + year_offset
+        d = dt.date(year, int(month), int(day))
+        # Se a data já passou este ano, assume que é do próximo
+        if d < today:
+            d = dt.date(year + 1, int(month), int(day))
+        return d
+    except (ValueError, IndexError):
+        return None
+
+
+def is_one_day_before(channel_id: str, root_ts: str) -> bool:
+    """
+    Verifica se HOJE é exatamente 1 dia antes da data de fim da tarefa.
+    Compara com a data extraída do header da mensagem raiz.
+    """
+    try:
+        result = client.conversations_history(channel=channel_id, limit=1)
+        for msg in result.get("messages", []):
+            if msg["ts"] == root_ts:
+                tasks = extract_tasks(msg.get("text", ""))
+                if not tasks:
+                    return False
+                end_date = parse_end_date(tasks[0].get("end_date_str"))
+                if end_date is None:
+                    return False
+                today = dt.date.today()
+                diff = (end_date - today).days
+                return diff == 1
+        return False
+    except SlackApiError:
+        return False
 
 
 # ── Mensagens ────────────────────────────────────────────────────────────────
@@ -143,28 +202,28 @@ def bot_already_followed_up(channel, thread_ts):
 
 # ── Buscar threads abertas ──────────────────────────────────────────────────
 
-def find_open_threads():
-    """Retorna threads abertas (sem ✅ de conclusão)."""
+def find_open_threads(channel_id: str) -> list:
+    """Retorna threads abertas (sem ✅ de conclusão) em um canal específico."""
     bot_id = get_bot_user_id()
     threads = []
     try:
-        result = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
+        result = client.conversations_history(channel=channel_id, limit=200)
         for msg in result.get("messages", []):
             if msg.get("user") != bot_id:
                 continue
             # Slack converte 📌 em :pushpin: no payload, então checa ambos
             if "📌" not in msg.get("text", "") and ":pushpin:" not in msg.get("text", ""):
                 continue
-            if is_thread_done(msg["ts"]):
+            if is_thread_done(msg["ts"], channel_id):
                 log.info(f"Thread {msg['ts']} com ✅ — ignorando")
                 continue
             tasks = extract_tasks(msg["text"])
             if not tasks:
                 continue
             thread_ts = msg.get("thread_ts") or msg["ts"]
-            threads.append({"ts": thread_ts, "root_ts": msg["ts"], "tasks": tasks})
+            threads.append({"ts": thread_ts, "root_ts": msg["ts"], "tasks": tasks, "channel_id": channel_id})
     except SlackApiError as e:
-        log.error(f"Erro ao buscar histórico: {e}")
+        log.error(f"Erro ao buscar histórico do canal {channel_id}: {e}")
     return threads
 
 
@@ -172,42 +231,75 @@ def find_open_threads():
 
 def run():
     log.info("Iniciando cobrança de updates")
-    threads = find_open_threads()
-    log.info(f"Threads abertas encontradas: {len(threads)}")
+
+    channel_map = parse_channel_map()
+    if channel_map:
+        canais = list(channel_map.values())
+        log.info(f"CHANNEL_MAP carregado: {list(channel_map.keys())}")
+    else:
+        log.warning("CHANNEL_MAP não configurado — usando SLACK_CHANNEL_ID como fallback")
+        canais = [SLACK_CHANNEL_ID] if SLACK_CHANNEL_ID else []
+
+    all_threads = []
+    for canal in canais:
+        threads_canal = find_open_threads(canal)
+        log.info(f"Canal {canal}: {len(threads_canal)} thread(s) aberta(s)")
+        all_threads.extend(threads_canal)
+
+    log.info(f"Total threads abertas: {len(all_threads)}")
 
     count = 0
-    for thread in threads:
+    for thread in all_threads:
         thread_ts = thread["ts"]
         tasks = thread["tasks"]
+        channel_id = thread["channel_id"]
 
-        # Ninguém respondeu ainda: mensagem completa (primeira vez)
-        if not has_human_replied(SLACK_CHANNEL_ID, thread_ts):
+        human_replied = has_human_replied(channel_id, thread_ts)
+        bot_followed_up = bot_already_followed_up(channel_id, thread_ts)
+
+        # --- 1ª cobrança: ninguém respondeu ainda ---
+        if not human_replied:
             try:
                 client.chat_postMessage(
-                    channel=SLACK_CHANNEL_ID,
+                    channel=channel_id,
                     thread_ts=thread_ts,
                     text=build_first_message(tasks),
                 )
-                log.info(f"Primeira cobrança na thread {thread_ts}")
+                log.info(f"1ª cobrança na thread {thread_ts} (canal {channel_id})")
                 count += 1
             except SlackApiError as e:
                 log.error(f"Erro ao cobrar thread {thread_ts}: {e.response['error']}")
             continue
 
-        # Já teve reply: follow-up curto (só se bot ainda não seguiu)
-        if bot_already_followed_up(SLACK_CHANNEL_ID, thread_ts):
-            log.info(f"Thread {thread_ts}: bot já fez follow-up — pulando")
+        # --- 2ª cobrança: follow-up curto (já teve resposta, bot ainda não seguiu) ---
+        if not bot_followed_up:
+            try:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=build_followup_message(tasks),
+                )
+                log.info(f"2ª cobrança na thread {thread_ts} (canal {channel_id})")
+                count += 1
+            except SlackApiError as e:
+                log.error(f"Erro ao cobrar thread {thread_ts}: {e.response['error']}")
             continue
-        try:
-            client.chat_postMessage(
-                channel=SLACK_CHANNEL_ID,
-                thread_ts=thread_ts,
-                text=build_followup_message(tasks),
-            )
-            log.info(f"Follow-up na thread {thread_ts}")
-            count += 1
-        except SlackApiError as e:
-            log.error(f"Erro ao cobrar thread {thread_ts}: {e.response['error']}")
+
+        # --- 3ª cobrança: só se for 1 dia antes da data de fim ---
+        if is_one_day_before(channel_id, thread["root_ts"]):
+            try:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=build_followup_message(tasks),
+                )
+                log.info(f"3ª cobrança (1 dia antes do fim) na thread {thread_ts} (canal {channel_id})")
+                count += 1
+            except SlackApiError as e:
+                log.error(f"Erro ao cobrar thread {thread_ts}: {e.response['error']}")
+            continue
+
+        log.info(f"Thread {thread_ts}: limite de 3 cobranças atingido — pulando")
 
     log.info(f"Concluído: {count} cobrança(ões) enviada(s)")
 

@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 daily_briefing.py
-Lê cronogramas do Smartsheet e envia resumo diário no Slack.
-Uma tarefa só é postada uma vez — atualizações ficam na thread existente.
-Roda via cron às 8h30.
+LÃƒÂª cronogramas do Smartsheet e envia resumo diÃƒÂ¡rio no Slack.
+Uma tarefa sÃƒÂ³ ÃƒÂ© postada uma vez Ã¢â‚¬â€ atualizaÃƒÂ§ÃƒÂµes ficam na thread existente.
+Roda via cron ÃƒÂ s 8h30.
 """
 
 import os
@@ -11,6 +11,7 @@ import re
 import logging
 from collections import defaultdict
 from datetime import date
+from difflib import get_close_matches
 from dotenv import load_dotenv
 import smartsheet
 from slack_sdk import WebClient
@@ -25,52 +26,77 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# Ã¢â€â‚¬Ã¢â€â‚¬ Config Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 SMARTSHEET_TOKEN   = os.environ["SMARTSHEET_TOKEN"]
 FOLDER_ID          = int(os.environ["SMARTSHEET_FOLDER_ID"])
 SLACK_BOT_TOKEN    = os.environ["SLACK_BOT_TOKEN"]
-SLACK_CHANNEL_ID   = os.environ["SLACK_CHANNEL_ID"]
+SLACK_CHANNEL_ID   = os.getenv("SLACK_CHANNEL_ID", "")  # fallback de compatibilidade
 BIANCA_USER_ID     = os.environ["BIANCA_USER_ID"]
-STATUS_DONE_VALUES = {v.strip() for v in os.getenv("STATUS_DONE_VALUES", "Concluída,Concluida,Cancelada,Cancelado").split(",")}
+STATUS_DONE_VALUES = {v.strip() for v in os.getenv("STATUS_DONE_VALUES", "ConcluÃƒÂ­da,Concluida,Cancelada,Cancelado").split(",")}
 
 STATE_FILE = os.path.expanduser("~/.hermes/scripts/.briefing_posted")
 
 COL_TASK           = "Atividade"
 COL_STATUS         = "Status"
-COL_START_DATE     = "Data de Início Planejada"
+COL_START_DATE     = "Data de InÃƒÂ­cio Planejada"
 COL_END_DATE       = "Data de Fim Planejada"
-COL_ASSIGNEE       = "Time Responsável"
-COL_DEPENDENCY     = "Dependência"
+COL_ASSIGNEE       = "Time ResponsÃƒÂ¡vel"
+COL_DEPENDENCY     = "DependÃƒÂªncia"
 
-# Mapa fixo: nome do time → lista de Slack User IDs
+# Mapa fixo: nome do time Ã¢â€ â€™ lista de Slack User IDs
 TEAM_SLACK_MAP = {
-    "Gestão Lançamentos":               ["U06093URWPR"],
+    "GestÃƒÂ£o LanÃƒÂ§amentos":               ["U06093URWPR"],
     "MARCO":                            ["U06093URWPR"],
     "Diretoria":                        ["U06093URWPR"],
     "Financeiro":                       ["U06093URWPR"],
     "Comercial":                        ["U06093URWPR"],
     "Marketplace":                      ["U06093URWPR"],
-    "Fornecedores Lançamentos e Obras": ["U08MYES3EJ0"],
-    "Fornecedores Lançamentos":             ["U08MYES3EJ0"],
+    "Fornecedores LanÃƒÂ§amentos e Obras": ["U08MYES3EJ0"],
+    "Fornecedores LanÃƒÂ§amentos":             ["U08MYES3EJ0"],
     "Obras":                               ["U08MYES3EJ0"],
-    "Orçamentos Lançamentos":           ["U090UKQAXFD"],
+    "OrÃƒÂ§amentos LanÃƒÂ§amentos":           ["U090UKQAXFD"],
     "Compra de Terrenos":               ["U05Q6PXC9KR"],
-    "Análise de Terrenos":              ["U05Q6PXC9KR"],
-    "Jurídico":                         ["U046CCULGJF"],
-    "Projetos Lançamentos":             ["U07DXLFP1GT"],
+    "AnÃƒÂ¡lise de Terrenos":              ["U05Q6PXC9KR"],
+    "JurÃƒÂ­dico":                         ["U046CCULGJF"],
+    "Projetos LanÃƒÂ§amentos":             ["U07DXLFP1GT"],
     "Marketing":                        ["U0A8H79PACB"],
 }
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# Ã¢â€â‚¬Ã¢â€â‚¬ Channel map Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
+def parse_channel_map() -> dict:
+    """LÃƒÂª CHANNEL_MAP do env. Formato: 'Nome Sheet:CHANNEL_ID,...'"""
+    raw = os.getenv("CHANNEL_MAP", "")
+    mapping = {}
+    for item in raw.split(","):
+        if ":" in item:
+            sheet, channel = item.strip().split(":", 1)
+            mapping[sheet.strip()] = channel.strip()
+    return mapping
+
+
+def get_channel_for_sheet(sheet_name: str, channel_map: dict) -> str | None:
+    """Retorna o channel_id para a sheet, via fuzzy match. Fallback para SLACK_CHANNEL_ID se mapa vazio."""
+    if not channel_map:
+        return SLACK_CHANNEL_ID or None
+    if sheet_name in channel_map:
+        return channel_map[sheet_name]
+    matches = get_close_matches(sheet_name, channel_map.keys(), n=1, cutoff=0.6)
+    if matches:
+        return channel_map[matches[0]]
+    return None
+
+
+# Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 def slack_mentions(team_name: str) -> str:
-    """Retorna string com todas as @menções do time, ou nome simples se não mapeado."""
+    """Retorna string com todas as @menÃƒÂ§ÃƒÂµes do time, ou nome simples se nÃƒÂ£o mapeado."""
     if not team_name or team_name == "_sem time_":
-        return "_sem time responsável_"
+        return "_sem time responsÃƒÂ¡vel_"
     uids = TEAM_SLACK_MAP.get(team_name.strip())
     if not uids:
-        log.warning(f"Time '{team_name}' não encontrado no TEAM_SLACK_MAP")
+        log.warning(f"Time '{team_name}' nÃƒÂ£o encontrado no TEAM_SLACK_MAP")
         return team_name.strip()
     return " ".join(f"<@{uid}>" for uid in uids)
 
@@ -81,8 +107,8 @@ def get_bot_user_id(client) -> str:
 
 def is_thread_done(client, channel_id: str, msg_ts: str) -> bool:
     """
-    Retorna True se a thread tem ✅ reactions de:
-    - O próprio bot
+    Retorna True se a thread tem Ã¢Å“â€¦ reactions de:
+    - O prÃƒÂ³prio bot
     - Bianca
     """
     try:
@@ -99,14 +125,14 @@ def is_thread_done(client, channel_id: str, msg_ts: str) -> bool:
 
 
 def get_col_map(sheet) -> dict[str, int]:
-    """Mapeia nome de coluna → id de coluna."""
+    """Mapeia nome de coluna Ã¢â€ â€™ id de coluna."""
     col_map = {col.title: col.id for col in sheet.columns}
     log.info(f"Colunas encontradas: {list(col_map.keys())}")
     return col_map
 
 
 def cell_value(row, col_map: dict, col_name: str):
-    """Extrai o valor de uma célula pelo nome da coluna."""
+    """Extrai o valor de uma cÃƒÂ©lula pelo nome da coluna."""
     col_id = col_map.get(col_name)
     if col_id is None:
         return None
@@ -117,7 +143,7 @@ def cell_value(row, col_map: dict, col_name: str):
 
 
 def parse_date(raw) -> date | None:
-    """Converte string de data para objeto date. Retorna None se inválido."""
+    """Converte string de data para objeto date. Retorna None se invÃƒÂ¡lido."""
     if not raw:
         return None
     try:
@@ -129,7 +155,7 @@ def parse_date(raw) -> date | None:
 def parse_row(row, col_map: dict) -> dict | None:
     """
     Extrai os campos relevantes de uma linha do Smartsheet.
-    Retorna None se não tiver atividade ou data de fim.
+    Retorna None se nÃƒÂ£o tiver atividade ou data de fim.
     """
     task       = cell_value(row, col_map, COL_TASK)
     status     = cell_value(row, col_map, COL_STATUS) or ""
@@ -161,8 +187,8 @@ def parse_row(row, col_map: dict) -> dict | None:
 
 
 def fmt_date(d: date | None) -> str:
-    """Formata data como dd/mm ou '—' se None."""
-    return d.strftime("%d/%m") if d else "—"
+    """Formata data como dd/mm ou 'Ã¢â‚¬â€' se None."""
+    return d.strftime("%d/%m") if d else "Ã¢â‚¬â€"
 
 
 def build_task_message(task: dict, mentions: str) -> str:
@@ -170,20 +196,24 @@ def build_task_message(task: dict, mentions: str) -> str:
     fim    = fmt_date(task["end_date"])
     status = task["status"] or "sem status"
     return (
-        f"Responsável: {mentions}\n"
-        f"Status: {status} | Início: {inicio} → Fim: {fim}"
+        f"ResponsÃƒÂ¡vel: {mentions}\n"
+        f"Status: {status} | InÃƒÂ­cio: {inicio} Ã¢â€ â€™ Fim: {fim}"
     )
 
 
 def build_task_header(task: dict, sheet_name: str, team: str) -> str:
     mentions = slack_mentions(team)
-    return f"📌 [{sheet_name}] [{team.upper()}] {task['task']}"
+    fim = fmt_date(task["end_date"])
+    return f"📌 [{sheet_name}] [{team.upper()}] {task['task']} [{fim}]"
 
 
-# ── Estado persistente ────────────────────────────────────────────────────────
+# Ã¢â€â‚¬Ã¢â€â‚¬ Estado persistente Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-def load_posted_tasks() -> dict[str, str]:
-    """Retorna {sheet|task_name: thread_ts} de tarefas já postadas."""
+def load_posted_tasks(channel_map: dict | None = None) -> dict[str, tuple]:
+    """
+    Retorna {sheet|task_name: (thread_ts, channel_id)} de tarefas jÃƒÂ¡ postadas.
+    Suporta formato antigo (3 campos) com fallback ao channel_map ou SLACK_CHANNEL_ID.
+    """
     try:
         with open(STATE_FILE) as f:
             result = {}
@@ -194,19 +224,35 @@ def load_posted_tasks() -> dict[str, str]:
                 parts = line.split("|")
                 if len(parts) >= 3:
                     key = "|".join(parts[:2])
-                    result[key] = parts[2]
+                    ts = parts[2]
+                    if len(parts) >= 4 and parts[3]:
+                        channel_id = parts[3]
+                    else:
+                        # formato antigo: tenta resolver pelo mapa
+                        sheet_name = parts[0]
+                        channel_id = ""
+                        if channel_map:
+                            channel_id = get_channel_for_sheet(sheet_name, channel_map) or ""
+                        if not channel_id:
+                            channel_id = SLACK_CHANNEL_ID
+                    result[key] = (ts, channel_id)
             return result
     except FileNotFoundError:
         return {}
 
 
-def save_posted_tasks(posted: dict[str, str]):
+def save_posted_tasks(posted: dict[str, tuple]):
+    """Salva {sheet|task_name: (thread_ts, channel_id)} no arquivo de estado."""
     with open(STATE_FILE, "w") as f:
-        for key, ts in posted.items():
-            f.write(f"{key}|{ts}\n")
+        for key, value in posted.items():
+            if isinstance(value, tuple):
+                ts, channel_id = value
+            else:
+                ts, channel_id = value, ""
+            f.write(f"{key}|{ts}|{channel_id}\n")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# Ã¢â€â‚¬Ã¢â€â‚¬ Main Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 def main():
     today = date.today()
@@ -217,21 +263,29 @@ def main():
     slack_client = WebClient(token=SLACK_BOT_TOKEN)
     bot_id       = get_bot_user_id(slack_client)
 
-    # Carrega tarefas já postadas
-    posted_tasks = load_posted_tasks()
-    log.info(f"Tarefas já postadas no estado: {len(posted_tasks)}")
+    channel_map = parse_channel_map()
+    if channel_map:
+        log.info(f"CHANNEL_MAP carregado: {list(channel_map.keys())}")
+    else:
+        log.warning("CHANNEL_MAP nÃƒÂ£o configurado Ã¢â‚¬â€ usando SLACK_CHANNEL_ID como fallback")
 
-    # Carrega threads existentes no canal com ✅ de bot/Bianca
+    # Carrega tarefas jÃƒÂ¡ postadas (passa channel_map para resolver fallback de entradas antigas)
+    posted_tasks = load_posted_tasks(channel_map)
+    log.info(f"Tarefas jÃƒÂ¡ postadas no estado: {len(posted_tasks)}")
+
+    # Carrega threads done de todos os canais do mapa
     existing_done_threads = set()
-    try:
-        result = slack_client.conversations_history(channel=SLACK_CHANNEL_ID, limit=200)
-        for msg in result.get("messages", []):
-            if msg.get("user") != bot_id:
-                continue
-            if is_thread_done(slack_client, SLACK_CHANNEL_ID, msg["ts"]):
-                existing_done_threads.add(msg["ts"])
-    except SlackApiError as e:
-        log.error(f"Erro ao buscar histórico do canal: {e}")
+    canais_a_verificar = list(channel_map.values()) if channel_map else ([SLACK_CHANNEL_ID] if SLACK_CHANNEL_ID else [])
+    for canal in canais_a_verificar:
+        try:
+            result = slack_client.conversations_history(channel=canal, limit=200)
+            for msg in result.get("messages", []):
+                if msg.get("user") != bot_id:
+                    continue
+                if is_thread_done(slack_client, canal, msg["ts"]):
+                    existing_done_threads.add(msg["ts"])
+        except SlackApiError as e:
+            log.error(f"Erro ao buscar histÃƒÂ³rico do canal {canal}: {e}")
 
     folder_children = ss_client.Folders.get_folder_children(FOLDER_ID)
     sheets = [item for item in folder_children.data]
@@ -244,6 +298,12 @@ def main():
         sheet_name = sheet_ref.name
         sheet_id   = sheet_ref.id
 
+        # Resolve canal para esta sheet
+        channel_id = get_channel_for_sheet(sheet_name, channel_map)
+        if not channel_id:
+            log.warning(f"Sheet '{sheet_name}': sem canal no CHANNEL_MAP Ã¢â‚¬â€ pulando")
+            continue
+
         try:
             sheet = ss_client.Sheets.get_sheet(sheet_id)
         except Exception as e:
@@ -255,10 +315,10 @@ def main():
         required = [COL_TASK, COL_STATUS, COL_END_DATE, COL_ASSIGNEE]
         missing  = [c for c in required if c not in col_map]
         if missing:
-            log.warning(f"Sheet '{sheet_name}': colunas ausentes {missing} — pulando")
+            log.warning(f"Sheet '{sheet_name}': colunas ausentes {missing} Ã¢â‚¬â€ pulando")
             continue
 
-        # Mapa de todas as tarefas (row_num → status)
+        # Mapa de todas as tarefas (row_num Ã¢â€ â€™ status)
         all_tasks: dict[str, str] = {}
         for row in sheet.rows:
             parsed = parse_row(row, col_map)
@@ -266,7 +326,7 @@ def main():
                 continue
             all_tasks[parsed["row_num"]] = parsed["status"]
 
-        # Filtra pendentes que já deveriam ter começado
+        # Filtra pendentes que jÃƒÂ¡ deveriam ter comeÃƒÂ§ado
         pending = []
         for row in sheet.rows:
             parsed = parse_row(row, col_map)
@@ -290,7 +350,7 @@ def main():
             pending.append(parsed)
 
         if not pending:
-            log.info(f"Sheet '{sheet_name}': sem pendências — sem mensagem")
+            log.info(f"Sheet '{sheet_name}': sem pendÃƒÂªncias Ã¢â‚¬â€ sem mensagem")
             continue
 
         # Agrupar por time
@@ -303,36 +363,36 @@ def main():
             for t in team_tasks:
                 task_key = f"{sheet_name}|{t['task']}"
 
-                # Se já foi postada, mantém no estado (evita repostar)
+                # Se jÃƒÂ¡ foi postada, mantÃƒÂ©m no estado (evita repostar)
                 if task_key in posted_tasks:
-                    thread_ts = posted_tasks[task_key]
-                    updated_posted[task_key] = thread_ts
+                    thread_ts, existing_channel = posted_tasks[task_key]
+                    updated_posted[task_key] = (thread_ts, existing_channel)
                     if thread_ts in existing_done_threads:
-                        log.info(f"Sheet '{sheet_name}': tarefa '{t['task'][:40]}' com ✅ — mantendo no estado")
+                        log.info(f"Sheet '{sheet_name}': tarefa '{t['task'][:40]}' com Ã¢Å“â€¦ Ã¢â‚¬â€ mantendo no estado")
                     else:
-                        log.info(f"Sheet '{sheet_name}': tarefa '{t['task'][:40]}' já postada — mantendo")
+                        log.info(f"Sheet '{sheet_name}': tarefa '{t['task'][:40]}' jÃƒÂ¡ postada Ã¢â‚¬â€ mantendo")
                     continue
 
                 mentions = slack_mentions(team)
                 header = build_task_header(t, sheet_name, team)
                 body   = build_task_message(t, mentions)
 
-                # Retry em caso de erro temporário do Slack
+                # Retry em caso de erro temporÃƒÂ¡rio do Slack
                 posted_ok = False
                 for attempt in range(3):
                     try:
                         result = slack_client.chat_postMessage(
-                            channel=SLACK_CHANNEL_ID,
+                            channel=channel_id,
                             text=header,
                         )
                         thread_ts = result["ts"]
                         slack_client.chat_postMessage(
-                            channel=SLACK_CHANNEL_ID,
+                            channel=channel_id,
                             text=body,
                             thread_ts=thread_ts,
                         )
-                        updated_posted[task_key] = thread_ts
-                        log.info(f"Sheet '{sheet_name}' | '{team}': thread criada ({t['task'][:40]})")
+                        updated_posted[task_key] = (thread_ts, channel_id)
+                        log.info(f"Sheet '{sheet_name}' | '{team}': thread criada em {channel_id} ({t['task'][:40]})")
                         messages_sent += 1
                         posted_ok = True
                         break
@@ -346,9 +406,9 @@ def main():
 
     # Atualiza estado persistente
     save_posted_tasks(updated_posted)
-    log.info(f"Briefing concluído: {messages_sent} nova(s) mensagem(s) | {len(updated_posted)} total no estado")
+    log.info(f"Briefing concluÃƒÂ­do: {messages_sent} nova(s) mensagem(s) | {len(updated_posted)} total no estado")
 
-    # Limpa do estado as tarefas que já estão done no SmartSheet
+    # Limpa do estado as tarefas que jÃƒÂ¡ estÃƒÂ£o done no SmartSheet
     done_keys = set()
     for sheet_ref in sheets:
         try:
@@ -375,3 +435,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
