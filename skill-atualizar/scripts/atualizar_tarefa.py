@@ -130,7 +130,7 @@ def save_state(state):
 def get_dm_channel():
     """Busca o channel ID da DM com Bianca via im:read."""
     try:
-        result = slack_client.conversations_list(types="im", limit=100)
+    slack_client.chat_postMessage(channel=dm_channel, text=text)
         for ch in result.get("channels", []):
             if ch.get("user") == BIANCA_USER_ID:
                 return ch["id"]
