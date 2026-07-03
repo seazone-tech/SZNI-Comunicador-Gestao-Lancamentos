@@ -108,8 +108,12 @@ def get_approved_tasks_from_thread(thread_ts):
         user = m.get('user', '')
         text = m.get('text') or ''
         # é aprovação?
-        is_reaction = any(rx['name'] in ('white_check_mark', 'check', 'heavy_check_mark')
-                          for rx in m.get('reactions', []))
+        # Só considera aprovação se a reação for da Bianca
+        is_reaction = any(
+            rx['name'] in ('white_check_mark', 'check', 'heavy_check_mark')
+            and BIANCA_USER_ID in rx.get('users', [])
+            for rx in m.get('reactions', [])
+        )
         is_bianca_text = (user == BIANCA_USER_ID and
                           re.match(r'^\s*(sim|aprovado|pode aplicar|apl[ic]+ar|sigo)\b', text, re.IGNORECASE))
         if is_reaction or is_bianca_text:

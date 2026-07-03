@@ -120,22 +120,24 @@ def parse_end_date(end_date_str: str | None, year_offset: int = 0) -> dt.date | 
 def is_one_day_before(channel_id: str, root_ts: str) -> bool:
     """
     Verifica se HOJE é exatamente 1 dia antes da data de fim da tarefa.
-    Compara com a data extraída do header da mensagem raiz.
+    Compara com a data extraída do header da mensagem raiz (messages[0]).
     """
     try:
-        result = client.conversations_history(channel=channel_id, limit=1)
-        for msg in result.get("messages", []):
-            if msg["ts"] == root_ts:
-                tasks = extract_tasks(msg.get("text", ""))
-                if not tasks:
-                    return False
-                end_date = parse_end_date(tasks[0].get("end_date_str"))
-                if end_date is None:
-                    return False
-                today = dt.date.today()
-                diff = (end_date - today).days
-                return diff == 1
-        return False
+        # Usa conversations_replies para buscar a mensagem raiz diretamente
+        result = client.conversations_replies(channel=channel_id, ts=root_ts)
+        msgs = result.get("messages", [])
+        if not msgs:
+            return False
+        root_msg = msgs[0]
+        tasks = extract_tasks(root_msg.get("text", ""))
+        if not tasks:
+            return False
+        end_date = parse_end_date(tasks[0].get("end_date_str"))
+        if end_date is None:
+            return False
+        today = dt.date.today()
+        diff = (end_date - today).days
+        return diff == 1
     except SlackApiError:
         return False
 
