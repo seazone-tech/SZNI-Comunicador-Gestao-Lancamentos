@@ -76,8 +76,12 @@ cp skill-fechamento/scripts/aprovar_changes.py ~/.hermes/scripts/aprovar_changes
 
 - **Uma tarefa = uma thread.** Nunca repostada no canal.
 - Estado persistente em `~/.hermes/scripts/.briefing_posted`
+  - Formato: `sheet|task|ts|channel|team`
+  - Exemplo: `[12235] Sao Miguel dos Milagres|Prospectar admins|1783339291.969579|C0BEKBE1SUS|Juridico`
 - Thread com ✅ de bot ou Bianca → ignorada por todos os scripts
-- Thread com ✅ de outra pessoa → continua ativa
+- Thread com ✅ de outra pessoa → bot adiciona o dele tambem
+- **Se thread foi apagada do Slack**: todos os scripts ignoram (sem fallback no historico)
+- **Troca de responsavel**: se "Time Responsavel" mudar, o briefing posta reply avisando o novo time
 
 ### Regras da cobrança
 
