@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-daily_briefing.py
+cronograma-briefing.py
 Lê cronogramas do Smartsheet e envia resumo diário no Slack.
 Uma tarefa só é postada uma vez — atualizações ficam na thread existente.
-Roda via cron, tipicamente seg-sex 8h.
+Roda via cron às 8h30.
 """
 
 import logging
@@ -53,7 +53,7 @@ TEAM_SLACK_MAP = {
     "Gestão Lançamentos": ["U06093URWPR"],
     "MARCO": ["U06093URWPR"],
     "Diretoria": ["U06093URWPR"],
-    "Financeiro": ["U06093URWPR"],
+    "Financeiro": ["U082WFCHEBZ"],
     "Comercial": ["U06093URWPR"],
     "Marketplace": ["U06093URWPR"],
     "Fornecedores Lançamentos e Obras": ["U090UKQAXFD"],

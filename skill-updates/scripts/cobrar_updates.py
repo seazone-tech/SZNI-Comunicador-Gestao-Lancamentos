@@ -146,40 +146,29 @@ def extract_tasks(text):
 
 # ── Mensagens ────────────────────────────────────────────────────────────────
 
+
 def build_first_message(tasks):
-    blocks = []
-    for t in tasks:
-        blocks.append(f"📋 {t['name']}")
     return (
         "Olá, bom dia! :wave:\n"
         "Preciso do seu update sobre essa tarefa!\n"
         "Me conte com o máximo de detalhes como está seu andamento e se temos algum gargalo ou previsão de atraso.\n\n"
-        + "\n".join(blocks)
-        + "\n\nObrigada! :raised_hands:"
+        "Obrigada! :raised_hands:"
     )
 
 
 def build_followup_message(tasks):
-    blocks = []
-    for t in tasks:
-        blocks.append(f"📋 {t['name']}")
     return (
         "Oie, passando aqui novamente pois não tive retorno. "
-        "Pode me atualizar da tarefa?\n\n"
-        + "\n".join(blocks)
+        "Pode me atualizar da tarefa?"
     )
 
 
 def build_reminder_message(tasks):
     """Lembrete de vencimento amanhã."""
-    blocks = []
-    for t in tasks:
-        blocks.append(f"📋 {t['name']}")
     return (
         "Olá!\n"
         "O vencimento dessa tarefa é amanhã. "
-        "Tudo certo para a sua entrega?\n\n"
-        + "\n".join(blocks)
+        "Tudo certo para a sua entrega?"
     )
 
 
@@ -306,7 +295,47 @@ def run():
             continue
 
         # ── Lembrete de vencimento (dia anterior ao prazo, às 10h) ──
+        # ── Buscar tarefa no SmartSheet ──
         end_date, status = get_task_deadline(sheet_hint, task_name)
+
+        # Se não encontrou a tarefa no SmartSheet, pular (pode ter sido movida/renomeada)
+        if end_date is None and status is None:
+            log.info(f"Tarefa '{task_name}' não encontrada no SmartSheet — ignorando thread {thread_ts}")
+            continue
+
+        deadline_tomorrow = end_date == today + dt.timedelta(days=1) if end_date else False
+        deadline_today    = end_date == today                      if end_date else False
+        is_done = status in DONE_VALUES if status else False
+        # ── Buscar tarefa no SmartSheet ──
+        end_date, status = get_task_deadline(sheet_hint, task_name)
+
+        # Se não encontrou a tarefa no SmartSheet, pular (pode ter sido movida/renomeada)
+        if end_date is None and status is None:
+            log.info(f"Tarefa '{task_name}' não encontrada no SmartSheet — ignorando thread {thread_ts}")
+            continue
+
+        deadline_tomorrow = end_date == today + dt.timedelta(days=1) if end_date else False
+        deadline_today    = end_date == today                      if end_date else False
+        is_done = status in DONE_VALUES if status else False
+        # ── Buscar tarefa no SmartSheet ──
+        end_date, status = get_task_deadline(sheet_hint, task_name)
+
+        # Se não encontrou a tarefa no SmartSheet, pular (pode ter sido movida/renomeada)
+        if end_date is None and status is None:
+            log.info(f"Tarefa '{task_name}' não encontrada no SmartSheet — ignorando thread {thread_ts}")
+            continue
+
+        deadline_tomorrow = end_date == today + dt.timedelta(days=1) if end_date else False
+        deadline_today    = end_date == today                      if end_date else False
+        is_done = status in DONE_VALUES if status else False
+        # ── Buscar tarefa no SmartSheet ──
+        end_date, status = get_task_deadline(sheet_hint, task_name)
+
+        # Se não encontrou a tarefa no SmartSheet, pular (pode ter sido movida/renomeada)
+        if end_date is None and status is None:
+            log.info(f"Tarefa '{task_name}' não encontrada no SmartSheet — ignorando thread {thread_ts}")
+            continue
+
         deadline_tomorrow = end_date == today + dt.timedelta(days=1) if end_date else False
         deadline_today    = end_date == today                      if end_date else False
         is_done = status in DONE_VALUES if status else False

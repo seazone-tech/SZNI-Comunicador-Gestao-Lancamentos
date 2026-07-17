@@ -1,128 +1,83 @@
 # SZNI-Comunicador-Gestao-Lancamentos
 
-Assistente de gestão de lançamentos da Bianca. Roda no Slack e integra com SmartSheet.
+Assistente de gestão de lançamentos da Bianca. Roda no Slack (Hermes) e integra com SmartSheet: posta briefings por time, cobra updates, monitora respostas e aplica mudanças aprovadas no cronograma.
 
-## O que ele faz
+## O que ele faz (jobs no Hermes)
 
-| Script | Quando | O que faz |
-|---|---|---|
-| **Briefing** | Seg-Sex 08:00 | Lê cronograma do SmartSheet e posta uma thread por tarefa pendente no canal do Slack |
-| **Cobrar Updates** | Seg-Sex 10:00 | Verifica threads abertas e cobra atualização — primeira vez manda 3 perguntas, follow-up manda mensagem curta (não duplica se já cobrou) |
-| **Monitor** | Seg-Sex 09:00–18:00 (a cada hora) | Lê respostas das threads, detecta sinais de risco (atraso, bloqueio, dúvida) e avisa Bianca por DM com link da thread |
-| **Fechamento** | Seg-Sex 17:30 | Classifica respostas do dia, sugere mudanças de status no SmartSheet e envia relatório numerado por DM |
-| **Aprovar** | Sob demanda | Bianca responde "aprova 1", "aprova 2" etc. O bot aplica as mudanças no SmartSheet e adiciona ✅ na thread |
+| Job (cron ID) | Script | Quando | O que faz |
+|---|---|---|---|
+| daily-briefing-cronogramas (`3580392bc37f`) | `cronograma-briefing.py` | Seg-Sex **08h30** | Lê cronogramas do SmartSheet e posta uma thread por tarefa pendente no canal do empreendimento |
+| cobrar-updates-diario (`5ef5a4385641`) | `cobrar_updates.py` | Seg-Sex 10h | Cobra atualização nas threads abertas (1ª vez: 3 perguntas; follow-up curto; não duplica) |
+| monitor-respostas-updates (`40266f26cd94`) | `monitor_updates.py` | Seg-Sex 9h-18h (por hora) | Lê respostas, detecta risco (atraso/bloqueio/dúvida) e avisa Bianca por DM |
+| fechamento-diario (`a73f113395f8`) | `fechamento_diario.py` | Seg-Sex 17h30 | Classifica respostas do dia e envia relatório numerado por DM com sugestões de status |
+| atualizar-tarefa-smartsheet (`b2e4f8a1c3d5`) | `atualizar_tarefa.py` | Seg-Sex 8h-19h (a cada 3 min) | Skill interativa: Bianca descreve na DM o que atualizar; bot acha a tarefa, confirma e aplica |
+| szni-aprovador-dm (`e80bee0a5ce9`) | `szni-aprovador-dm.py` | Seg-Sex (por hora) | Detecta ✅ nas threads de fechamento da DM e aplica as mudanças no SmartSheet |
+| — (sob demanda) | `aprovar_changes.py` | "aprova 1", "aprova 2"... | Aplica mudanças do relatório de fechamento e adiciona ✅ na thread |
 
-## Requisitos
+Atalhos no chat do bot: `/briefing`, `/cobrar`, `/fechamento` (disparam os jobs na hora).
 
-- Python 3.11+
-- WSL2 (Ubuntu)
-- Hermes (agendador de scripts — `~/.hermes/`)
-- Tokens: SmartSheet + Slack Bot
+## Arquitetura (desde 16-17/07/2026)
 
-## Instalação
+- **Hermes profile `default`** em `~/.hermes/` (WSL2 Ubuntu) — o agente vizinho **Analista** tem profile próprio em `~/.hermes/profiles/analista/`
+- **Gateway como serviço systemd** (`hermes-gateway`) — sobe com o WSL e reinicia se cair (antes era tmux manual)
+- **Keep-alive**: `hermes-gateways-keepalive.vbs` na pasta Inicializar do Windows religa o WSL em 10s se cair
+- Avisos "Gateway shutting down" em canais: **desativados** (`slack.gateway_restart_notification: false` no config.yaml)
+- Modelo: GPT-5.4 via hub Seazone (`custom_providers` no config.yaml; key no `.env` de `~/.hermes/scripts/`)
+- Logs: `journalctl --user -u hermes-gateway -f`
 
-```bash
-# 1. Clone
-git clone https://github.com/seazone-tech/SZNI-Comunicador-Gestao-Lancamentos.git
-
-# 2. Crie o venv e instale as dependências
-python3 -m venv ~/.hermes/scripts/venv
-~/.hermes/scripts/venv/bin/python3 -m pip install python-dotenv smartsheet-python-sdk slack-sdk
-
-# 3. Configure as variáveis
-cp .env.example ~/.hermes/scripts/.env
-# Edite o .env com seus tokens
-
-# 4. Copie os scripts para o Hermes
-cp skill-briefing/scripts/daily_briefing.py ~/.hermes/scripts/cronograma-briefing.py
-cp skill-updates/scripts/cobrar_updates.py ~/.hermes/scripts/cobrar_updates.py
-cp skill-monitor/scripts/monitor_updates.py ~/.hermes/scripts/monitor_updates.py
-cp skill-fechamento/scripts/fechamento_diario.py ~/.hermes/scripts/fechamento_diario.py
-cp skill-fechamento/scripts/aprovar_changes.py ~/.hermes/scripts/aprovar_changes.py
-```
-
-## Configuração
-
-### Variáveis de ambiente (`~/.hermes/scripts/.env`)
+## Variáveis de ambiente (`~/.hermes/scripts/.env`)
 
 | Variável | Descrição |
 |---|---|
 | `SMARTSHEET_TOKEN` | Token da API do SmartSheet |
-| `SMARTSHEET_FOLDER_ID` | ID da pasta que contém os cronogramas |
-| `SLACK_BOT_TOKEN` | Token do bot Slack |
-| `SLACK_CHANNEL_ID` | ID do canal onde o bot posta os briefings |
-| `BIANCA_USER_ID` | ID do Slack da Bianca (para DMs) |
-| `STATUS_DONE_VALUES` | Status que indicam tarefa concluída (ex: `Concluída,Cancelada`) |
+| `SMARTSHEET_FOLDER_ID` | Pasta dos cronogramas ativos |
+| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Tokens do bot Comunicador |
+| `OPENAI_API_KEY` | Key do hub Seazone (modelo do agente) |
+| `CHANNEL_MAP` | `Nome Sheet:CHANNEL_ID,...` — canal de cada empreendimento |
+| `SLACK_CHANNEL_ID` | Canal fallback |
+| `BIANCA_USER_ID` | U06093URWPR |
+| `STATUS_DONE_VALUES` | Status que encerram tarefa |
 
-### Colunas esperadas no SmartSheet
+## Regras de negócio
 
-- `Atividade`
-- `Status`
-- `Time Responsável`
-- `Data de Início Planejada`
-- `Data de Fim Planejada`
-- `Data de Início Realizada`
-- `Data de Fim Realizada`
-- `Dependência` (opcional — número da linha da tarefa que precisa estar concluída antes)
+### Briefing
+1. `sync_done_tasks` roda primeiro: adiciona ✅ nas threads de tarefas concluídas no SmartSheet
+2. Tarefa pendente entra se: status fora de `STATUS_DONE_VALUES` + Data de Início Planejada preenchida e <= hoje + dependência (se houver) concluída
+3. **Uma tarefa = uma thread**, nunca repostada; estado em `.briefing_posted` (`sheet|task|ts|channel|team`)
+4. Troca de "Time Responsável" no SmartSheet → reply na thread avisando o novo time
 
-### Regras de filtragem do briefing
+### Cobrança
+- Sem resposta humana → mensagem completa (3 perguntas); com resposta → follow-up curto; já cobrou → pula
 
-1. Status NÃO está em `STATUS_DONE_VALUES`
-2. `Data de Início Planejada` não está em branco
-3. `Data de Início Planejada` <= hoje
-4. Se `Dependência` tem valor → a tarefa referenciada precisa estar concluída
+### Fechamento
+- "concluiu/entregou" → sugere Concluída + data · "começou/iniciou" → Em Andamento · fim planejado vencido → Atrasada
 
-### Organização do canal
-
-- **Uma tarefa = uma thread.** Nunca repostada no canal.
-- Estado persistente em `~/.hermes/scripts/.briefing_posted`
-  - Formato: `sheet|task|ts|channel|team`
-  - Exemplo: `[12235] Sao Miguel dos Milagres|Prospectar admins|1783339291.969579|C0BEKBE1SUS|Juridico`
-- Thread com ✅ de bot ou Bianca → ignorada por todos os scripts
-- Thread com ✅ de outra pessoa → bot adiciona o dele tambem
-- **Se thread foi apagada do Slack**: todos os scripts ignoram (sem fallback no historico)
-- **Troca de responsavel**: se "Time Responsavel" mudar, o briefing posta reply avisando o novo time
-
-### Regras da cobrança
-
-- Sem resposta humana → manda mensagem completa com 3 perguntas
-- Com resposta humana, sem follow-up do bot → manda mensagem curta
-- Bot já mandou follow-up → pula (não duplica)
-
-### Regras do fechamento
-
-- Resposta com "concluiu" / "entregou" → sugere `Status → Concluída` + data de fim
-- Resposta com "começou" / "iniciou" → sugere `Status → Em Andamento`
-- Data de fim planejada já passou e tarefa não foi concluída → sugere `Status → Atrasada`
+### Gerais
+- LGPD: nunca nomear cliente/proprietário/hóspede
+- Nunca inventar números, fatos ou links; sempre citar fonte e data
 
 ## Onde os arquivos ficam
 
 | O quê | Onde |
 |---|---|
-| Scripts em execução | `~/.hermes/scripts/` (WSL) |
-| Variáveis de ambiente | `~/.hermes/scripts/.env` |
-| Threads postadas | `~/.hermes/scripts/.briefing_posted` |
-| Estado do monitor | `~/.hermes/scripts/.monitor_state` |
-| Estado do fechamento | `~/.hermes/scripts/.fechamento_state` |
+| Scripts em execução (fonte da verdade) | `~/.hermes/scripts/` (WSL) |
+| Espelhos versionados | este repo, `skill-*/scripts/` |
+| Estado (threads, monitor, fechamento) | `~/.hermes/scripts/.briefing_posted`, `.monitor_state`, `.fechamento_state` |
 | Agendamento | `~/.hermes/cron/jobs.json` |
+| Serviço do gateway | `~/.config/systemd/user/hermes-gateway.service` |
+
+> **Fluxo de edição**: editar no WSL (onde roda) e sincronizar pro repo — ou o contrário, contanto que os dois fiquem iguais. O repo é o backup versionado.
 
 ## Estrutura do repositório
 
 ```
-SZNI-Comunicador-Gestao-Lancamentos/
-├── SOUL.md                      # Persona do agente
-├── README.md
-├── .env.example
-├── .gitignore
-├── memory/                      # Memória e configuração do projeto
-├── skill-briefing/scripts/      # daily_briefing.py
-├── skill-updates/scripts/       # cobrar_updates.py
-├── skill-monitor/scripts/       # monitor_updates.py
-└── skill-fechamento/scripts/    # fechamento_diario.py + aprovar_changes.py
+agente-Comunicador/
+├── README.md / SOUL.md / .env.example
+├── memory/szni-comunicador-setup.md   # memória técnica do setup
+├── skill-briefing/scripts/daily_briefing.py        (= cronograma-briefing.py no WSL)
+├── skill-updates/scripts/cobrar_updates.py
+├── skill-monitor/scripts/monitor_updates.py
+├── skill-fechamento/scripts/fechamento_diario.py + aprovar_changes.py
+├── skill-atualizar/scripts/atualizar_tarefa.py
+└── skill-szni/scripts/szni-aprovador-dm.py
 ```
-
-## Regras
-
-- Nunca nomear cliente/proprietário/hóspede no output (LGPD)
-- Nunca inventar números, fatos ou links
-- Sempre citar fonte e data
