@@ -78,6 +78,6 @@ agente-Comunicador/
 ├── skill-updates/scripts/cobrar_updates.py
 ├── skill-monitor/scripts/monitor_updates.py
 ├── skill-fechamento/scripts/fechamento_diario.py + aprovar_changes.py
-├── skill-atualizar-tarefa/scripts/atualizar_tarefa.py
-└── skill-aprovador-dm/scripts/szni-aprovador-dm.py
+├── skill-atualizar/scripts/atualizar_tarefa.py
+└── skill-szni/scripts/szni-aprovador-dm.py
 ```

@@ -29,8 +29,8 @@ Bianca Carina Valente (Bica) — Especialista de gestão de lançamentos
 | 5ef5a4385641 | cobrar_updates.py | skill-updates/scripts/ | Seg-Sex 10h |
 | 40266f26cd94 | monitor_updates.py | skill-monitor/scripts/ | Seg-Sex 9h-18h |
 | a73f113395f8 | fechamento_diario.py | skill-fechamento/scripts/ | Seg-Sex 17h30 |
-| b2e4f8a1c3d5 | atualizar_tarefa.py | skill-atualizar-tarefa/scripts/ | Seg-Sex 8h-19h, a cada 3 min |
-| e80bee0a5ce9 | szni-aprovador-dm.py | skill-aprovador-dm/scripts/ | Seg-Sex, por hora |
+| b2e4f8a1c3d5 | atualizar_tarefa.py | skill-atualizar/scripts/ | Seg-Sex 8h-19h, a cada 3 min |
+| e80bee0a5ce9 | szni-aprovador-dm.py | skill-szni/scripts/ | Seg-Sex, por hora |
 | (sob demanda) | aprovar_changes.py | skill-fechamento/scripts/ | "aprova N" |
 
 Todos com workdir `/home/compu/.hermes/scripts`. Atalhos no chat: `/briefing`, `/cobrar`, `/fechamento`.
