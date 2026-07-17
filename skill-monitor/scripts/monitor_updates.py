@@ -7,6 +7,7 @@ Ignora threads com ✅ de bot/Bianca (tarefa concluída no canal).
 Não filtra por data — monitora todo o histórico.
 """
 import os, re, logging, datetime
+from difflib import get_close_matches
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -18,9 +19,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 BOT_TOKEN  = os.environ["SLACK_BOT_TOKEN"]
-CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
+CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "")  # fallback de compatibilidade
 BIANCA_USER_ID = os.environ["BIANCA_USER_ID"]
 STATE_FILE = os.path.expanduser("~/.hermes/scripts/.monitor_state")
+
+
+def parse_channel_map() -> dict:
+    """Lê CHANNEL_MAP do env. Formato: 'Nome Sheet:CHANNEL_ID,...'"""
+    raw = os.getenv("CHANNEL_MAP", "")
+    mapping = {}
+    for item in raw.split(","):
+        if ":" in item:
+            sheet, channel = item.strip().split(":", 1)
+            mapping[sheet.strip()] = channel.strip()
+    return mapping
 
 client = WebClient(token=BOT_TOKEN)
 TZ = datetime.timezone(datetime.timedelta(hours=-3))
@@ -65,30 +77,35 @@ def get_bot_user_id():
     return BOT_USER_ID_CACHE
 
 
-def get_channel_name():
+def get_channel_name(channel_id: str = "") -> str:
     global _channel_name
-    if _channel_name:
+    cid = channel_id or CHANNEL_ID
+    if _channel_name and not channel_id:
         return _channel_name
     try:
-        result = client.conversations_info(channel=CHANNEL_ID)
-        _channel_name = result.data["channel"]["name"]
-        return _channel_name
+        result = client.conversations_info(channel=cid)
+        name = result.data["channel"]["name"]
+        if not channel_id:
+            _channel_name = name
+        return name
     except Exception:
-        return CHANNEL_ID
+        return cid
 
 
-def get_permalink(msg_ts):
+def get_permalink(msg_ts, channel_id: str = ""):
+    cid = channel_id or CHANNEL_ID
     try:
-        result = client.chat_getPermalink(channel=CHANNEL_ID, message_ts=msg_ts)
+        result = client.chat_getPermalink(channel=cid, message_ts=msg_ts)
         return result.data["permalink"]
     except Exception:
         return None
 
 
-def is_thread_done(msg_ts: str) -> bool:
+def is_thread_done(msg_ts: str, channel_id: str = "") -> bool:
     """True se a thread tem ✅ reactions de bot ou Bianca."""
+    cid = channel_id or CHANNEL_ID
     try:
-        result = client.reactions_get(channel=CHANNEL_ID, timestamp=msg_ts)
+        result = client.reactions_get(channel=cid, timestamp=msg_ts)
         for reaction in result.get("message", {}).get("reactions", []):
             if reaction.get("name") in ("white_check_mark", "check", "heavy_check_mark"):
                 users = reaction.get("users", [])
@@ -118,12 +135,13 @@ def save_processed(processed):
             f.write(item + "\n")
 
 
-def find_bot_threads():
-    """Busca TODAS as threads do bot, ignorando as com ✅ de conclusão."""
+def find_bot_threads(channel_id: str = "") -> list:
+    """Busca TODAS as threads do bot num canal, ignorando as com ✅ de conclusão."""
+    cid = channel_id or CHANNEL_ID
     my_id = get_bot_user_id()
     threads = []
     try:
-        result = client.conversations_history(channel=CHANNEL_ID, limit=200)
+        result = client.conversations_history(channel=cid, limit=200)
         for msg in result.data.get("messages", []):
             if msg.get("user") != my_id:
                 continue
@@ -131,18 +149,19 @@ def find_bot_threads():
             if not is_bot_briefing_thread(text):
                 continue
             msg_ts = msg["ts"]
-            if is_thread_done(msg_ts):
+            if is_thread_done(msg_ts, cid):
                 continue
             threads.append(msg_ts)
     except SlackApiError as e:
-        log.error(f"Erro ao buscar histórico: {e}")
+        log.error(f"Erro ao buscar histórico do canal {cid}: {e}")
     return threads
 
 
-def get_replies(thread_ts):
+def get_replies(thread_ts, channel_id: str = ""):
+    cid = channel_id or CHANNEL_ID
     my_id = get_bot_user_id()
     try:
-        result = client.conversations_replies(channel=CHANNEL_ID, ts=thread_ts)
+        result = client.conversations_replies(channel=cid, ts=thread_ts)
         replies = []
         for msg in result.data.get("messages", []):
             if msg.get("user") == my_id:
@@ -187,28 +206,38 @@ def send_dm_to_bianca(alerts):
 
 def run():
     log.info("Monitor de updates iniciado")
-    processed = load_processed()
-    threads = find_bot_threads()
-    log.info("Threads abertas encontradas: " + str(len(threads)))
 
+    channel_map = parse_channel_map()
+    if channel_map:
+        canais = list(channel_map.values())
+        log.info("CHANNEL_MAP carregado: " + str(list(channel_map.keys())))
+    else:
+        log.warning("CHANNEL_MAP não configurado — usando SLACK_CHANNEL_ID como fallback")
+        canais = [CHANNEL_ID] if CHANNEL_ID else []
+
+    processed = load_processed()
     new_alerts = []
 
-    for thread_ts in threads:
-        replies = get_replies(thread_ts)
-        if not replies:
-            continue
+    for canal in canais:
+        threads = find_bot_threads(canal)
+        log.info(f"Canal {canal}: " + str(len(threads)) + " thread(s) aberta(s)")
 
-        for reply in replies:
-            reply_key = thread_ts + "|" + reply["ts"]
-            if reply_key in processed:
+        for thread_ts in threads:
+            replies = get_replies(thread_ts, canal)
+            if not replies:
                 continue
 
-            findings = parse_reply(reply["text"])
-            if findings:
-                new_alerts.append(get_permalink(reply["ts"]))
-                log.info("ALERTA: " + reply["text"][:50])
+            for reply in replies:
+                reply_key = thread_ts + "|" + reply["ts"]
+                if reply_key in processed:
+                    continue
 
-            processed.add(reply_key)
+                findings = parse_reply(reply["text"])
+                if findings:
+                    new_alerts.append(get_permalink(reply["ts"], canal))
+                    log.info("ALERTA: " + reply["text"][:50])
+
+                processed.add(reply_key)
 
     save_processed(processed)
     send_dm_to_bianca(new_alerts)
